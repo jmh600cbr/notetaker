@@ -28,7 +28,12 @@ jobs:
       - run: npm ci
       - run: npm test
       - name: Build
-        run: npx electron-builder --publish never
+        shell: bash
+        run: |
+          # An empty CSC_LINK is read as a file path, so drop unset signing secrets.
+          if [ -z "$CSC_LINK" ]; then unset CSC_LINK CSC_KEY_PASSWORD; fi
+          if [ -z "$APPLE_ID" ]; then unset APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; fi
+          npx electron-builder --publish never
         env:
           # Optional code signing. Leave these secrets unset to build unsigned installers.
           CSC_LINK: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERTIFICATE_P12_BASE64 || secrets.WIN_CERTIFICATE_PFX_BASE64 }}
