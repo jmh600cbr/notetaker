@@ -3,6 +3,10 @@
 <h1 align="center">Sidebar</h1>
 <p align="center"><b>The AI notetaker that never joins the call.</b><br/>Transcripts and summaries for Zoom, Teams and Meet, including court hearings where bots aren't allowed.</p>
 
+<p align="center">
+  <a href="https://github.com/jmh600cbr/notetaker/releases/latest"><b>⬇ Download Sidebar for Mac or Windows</b></a>
+</p>
+
 ---
 
 Most AI notetakers send a bot into your meeting. Courts and many clients won't admit a bot. Sidebar is a small desktop app for **Mac and Windows** that runs in your menu bar or system tray and records what *your own computer* hears: the call audio plus your microphone. Nothing joins the meeting and nobody sees a participant called "Notetaker".
@@ -43,7 +47,7 @@ Sidebar shows this notice before the first recording.
 
 ## Install (for teammates)
 
-1. Download the installer from the [Releases page](../../releases): **Sidebar-vX.Y.Z-arm64.dmg** (Mac with Apple chip), **Sidebar-vX.Y.Z-x64.dmg** (Intel Mac) or **Sidebar-Setup-vX.Y.Z.exe** (Windows).
+1. Download the installer from the [latest release](https://github.com/jmh600cbr/notetaker/releases/latest): **Sidebar-vX.Y.Z-arm64.dmg** (Mac with Apple chip), **Sidebar-vX.Y.Z-x64.dmg** (Intel Mac) or **Sidebar-Setup-vX.Y.Z.exe** (Windows).
 2. **Mac:** open the .dmg and drag Sidebar to Applications. **Windows:** run the installer.
 3. Open Sidebar, click **Settings → Import team setup…** and choose the `sidebar-team-setup.json` file your admin sent you. That's it.
 
