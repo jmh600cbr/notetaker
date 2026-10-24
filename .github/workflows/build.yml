@@ -47,6 +47,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Check the Windows update manifest was built
+        if: runner.os == 'Windows'
+        shell: bash
+        run: test -f dist/latest.yml && cat dist/latest.yml
       - name: Verify the Mac app's signature
         if: runner.os == 'macOS'
         run: |
@@ -57,9 +61,12 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sidebar-${{ runner.os }}
+          # latest.yml and the .blockmap files let installed copies update themselves.
           path: |
             dist/*.dmg
             dist/*.exe
+            dist/*.blockmap
+            dist/latest*.yml
           if-no-files-found: error
 
   release:

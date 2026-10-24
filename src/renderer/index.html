@@ -22,6 +22,7 @@
         <button id="newBtn" class="btn primary block"><span class="dot"></span> New recording</button>
         <input id="search" class="search" type="search" placeholder="Search notes" />
         <ul id="meetingList" class="meeting-list"></ul>
+        <div id="updateBanner" class="update-banner" hidden></div>
         <button id="settingsBtn" class="btn ghost block">Settings</button>
       </aside>
       <main id="view" class="view"></main>
@@ -84,6 +85,15 @@
             <input type="checkbox" name="openAtLogin" />
             <span>Open Sidebar when I log in <small>Starts quietly in the menu bar / system tray.</small></span>
           </label>
+        </section>
+
+        <section>
+          <h3>About</h3>
+          <div class="row about-row">
+            <span>Sidebar <span id="appVersion"></span></span>
+            <button type="button" id="checkUpdatesBtn" class="btn ghost small">Check for updates</button>
+          </div>
+          <p class="hint" id="updateStatus"></p>
         </section>
 
         <div class="dialog-actions">

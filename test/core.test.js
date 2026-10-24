@@ -79,3 +79,12 @@ test('store saves meetings, audio and settings', () => {
   assert.throws(() => store.meetingDir('../etc'));
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('update versions compare numerically', () => {
+  const { isNewer } = require('../src/main/version');
+  assert.equal(isNewer('v0.1.2', '0.1.1'), true);
+  assert.equal(isNewer('v0.1.10', '0.1.9'), true);
+  assert.equal(isNewer('v0.2.0', '0.10.0'), false);
+  assert.equal(isNewer('v0.1.1', '0.1.1'), false);
+  assert.equal(isNewer('v1.0.0', '0.9.9'), true);
+});

@@ -18,6 +18,7 @@ const { initMain: initAudioLoopback } = require('electron-audio-loopback');
 const { Store } = require('./store');
 const { transcribeFile } = require('./transcribe');
 const { summarize, answerQuestion, identifySpeakers, formatTranscript } = require('./summarize');
+const { Updater } = require('./updater');
 
 // Must run before the app is ready: enables capturing the computer's audio
 // output (what you hear from Zoom/Teams/Meet) without a virtual audio driver.
@@ -31,6 +32,7 @@ let tray = null;
 let store = null;
 let isRecording = false;
 let isQuitting = false;
+let updater = null;
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -391,6 +393,15 @@ function registerIpc() {
     refreshTray();
   });
 
+  ipcMain.handle('updater:get', () => (updater ? updater.state : { status: 'idle' }));
+  ipcMain.handle('updater:check', () => (updater ? updater.check(true) : { status: 'idle' }));
+  ipcMain.handle('updater:install', () => {
+    // Never restart in the middle of a recording.
+    if (isRecording || !updater) return false;
+    updater.install();
+    return true;
+  });
+
   ipcMain.handle('shell:openExternal', (_e, url) => {
     if (typeof url === 'string' && url.startsWith('https://')) shell.openExternal(url);
   });
@@ -406,6 +417,14 @@ app.whenReady().then(() => {
   registerIpc();
   createWindow();
   createTray();
+
+  updater = new Updater({
+    onState: (state) => send('updater:state', state),
+    beforeInstall: () => {
+      isQuitting = true;
+    },
+  });
+  updater.start();
 
   if (!globalShortcut.register(SHORTCUT, toggleRecording)) {
     console.warn(`Could not register ${SHORTCUT}; another app is using it.`);

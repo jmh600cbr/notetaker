@@ -148,7 +148,7 @@ function renderStart() {
         </div>
         <label class="field">
           <span>Names &amp; terms to listen for <small>(optional, comma separated)</small></span>
-          <input id="keytermsInput" placeholder="e.g. Justice Okafor, Harris Partners, Rule 20 motion" value="${esc(state.draft.keyterms)}" />
+          <input id="keytermsInput" placeholder="e.g. Justice Okafor, Acme Holdings, Rule 20 motion" value="${esc(state.draft.keyterms)}" />
         </label>
         <button class="btn record" id="recordBtn"><span class="dot"></span> Start recording</button>
         <p class="hint center">Tip: press <kbd>${shortcutLabel()}</kbd> anywhere to start or stop, even with Sidebar hidden.</p>
@@ -437,6 +437,7 @@ async function startRecording() {
   state.recorder = recorder;
   state.selectedId = null;
   api.setRecordingState(true);
+  renderUpdate();
   if (document.hidden) new Notification('Sidebar is recording', { body: `Press ${shortcutLabel()} to stop.`, silent: true });
   render();
   state.tick = setInterval(() => {
@@ -457,6 +458,7 @@ async function finishRecorder() {
   state.recorder = null;
   state.recordingId = null;
   api.setRecordingState(false);
+  renderUpdate();
   return { id, seconds };
 }
 
@@ -586,10 +588,62 @@ function showNotice() {
   });
 }
 
+// ---------- updates ----------
+
+function updateStatusText(u) {
+  switch (u.status) {
+    case 'dev': return 'Updates are turned off in development builds.';
+    case 'checking': return 'Checking for updates…';
+    case 'current': return "You're on the latest version.";
+    case 'available': return `Version ${u.version} is available.`;
+    case 'downloading': return `Downloading version ${u.version || ''}… ${u.progress || 0}%`;
+    case 'installing': return 'Installing the update…';
+    case 'ready': return `Version ${u.version} is ready. It installs when Sidebar restarts.`;
+    case 'error': return u.error || 'Couldn’t check for updates.';
+    default: return '';
+  }
+}
+
+function renderUpdate() {
+  const u = state.update || {};
+  $('#appVersion').textContent = u.current ? `v${u.current}` : '';
+  $('#updateStatus').textContent = updateStatusText(u);
+  $('#checkUpdatesBtn').disabled = ['checking', 'downloading', 'installing', 'dev'].includes(u.status);
+
+  const banner = $('#updateBanner');
+  const recording = Boolean(state.recorder);
+  let html = '';
+  if (u.status === 'ready' || u.status === 'available') {
+    const label = u.status === 'ready' ? 'Restart to update' : 'Update now';
+    html = `<div><strong>Sidebar ${esc(u.version)} is here.</strong>${recording ? ' You can update after this recording.' : ''}</div>
+      <button class="btn primary" id="installUpdateBtn" ${recording ? 'disabled' : ''}>${label}</button>`;
+  } else if (u.status === 'downloading' && u.version) {
+    html = `<div>Downloading Sidebar ${esc(u.version)}…</div><div class="bar"><i style="width:${Number(u.progress) || 0}%"></i></div>`;
+  } else if (u.status === 'installing') {
+    html = '<div>Installing the update. Sidebar will reopen in a moment…</div>';
+  }
+  banner.hidden = !html;
+  banner.innerHTML = html;
+  const btn = $('#installUpdateBtn');
+  if (btn) btn.addEventListener('click', () => api.installUpdate());
+}
+
+api.onUpdateState((u) => {
+  state.update = u;
+  renderUpdate();
+});
+
+$('#checkUpdatesBtn').addEventListener('click', async () => {
+  state.update = await api.checkForUpdates();
+  renderUpdate();
+});
+
 // ---------- boot ----------
 
 (async function init() {
   state.settings = await api.getSettings();
+  state.update = await api.getUpdate();
+  renderUpdate();
   document.body.classList.add(`platform-${state.settings.platform}`);
   await refreshMeetings();
   render();

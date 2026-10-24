@@ -200,3 +200,11 @@ h1 { font-size: 30px; margin: 12px 0 6px; letter-spacing: -0.4px; }
 
 .toast { position: fixed; bottom: 22px; left: 50%; transform: translate(-50%, 20px); background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 9px; opacity: 0; pointer-events: none; transition: all 0.2s; z-index: 10; max-width: 80vw; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---------- updates ---------- */
+.update-banner { background: #1f2b4d; border: 1px solid #2e3b60; border-radius: 10px; padding: 10px 12px; color: #fff; font-size: 13px; line-height: 1.4; display: flex; flex-direction: column; gap: 8px; }
+.update-banner[hidden] { display: none; }
+.update-banner .btn { padding: 6px 10px; font-size: 13px; }
+.update-banner .bar { height: 5px; background: #2e3b60; }
+.update-banner .bar i { background: var(--accent); }
+.about-row { justify-content: space-between; }
