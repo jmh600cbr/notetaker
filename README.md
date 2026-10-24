@@ -91,14 +91,14 @@ npm run dist:win   # build .exe (on Windows)
 
 ### Releasing
 
-Push a version tag and GitHub Actions builds both installers and publishes them as a GitHub release:
+Every push builds both installers in GitHub Actions. To publish a new release, bump the version and push:
 
 ```bash
-npm version patch   # bumps package.json and creates a tag
-git push --follow-tags
+npm version patch --no-git-tag-version   # e.g. 0.1.0 -> 0.1.1
+git commit -am "Release 0.1.1" && git push
 ```
 
-You can also run the **Build installers** workflow manually to get the installers as downloadable artifacts.
+The workflow publishes the installers as release `v0.1.1`. Pushes that don't change the version just build, and the installers can be downloaded from the workflow run's artifacts.
 
 ### Code signing (recommended before sharing widely)
 
