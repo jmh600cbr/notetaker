@@ -61,15 +61,15 @@
       }
     },
     "dmg": {
-      "title": "Install Sidebar"
+      "title": "Install Sidebar",
+      "artifactName": "Sidebar-v${version}-${arch}.${ext}"
     },
     "win": {
       "target": [
         {
           "target": "nsis",
           "arch": [
-            "x64",
-            "arm64"
+            "x64"
           ]
         }
       ],
@@ -80,11 +80,7 @@
       "perMachine": false,
       "createDesktopShortcut": true,
       "shortcutName": "Sidebar",
-      "artifactName": "Sidebar-Setup-${version}.${ext}"
-    },
-    "publish": {
-      "provider": "github",
-      "releaseType": "draft"
+      "artifactName": "Sidebar-Setup-v${version}.${ext}"
     }
   }
 }

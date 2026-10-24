@@ -43,7 +43,7 @@ Sidebar shows this notice before the first recording.
 
 ## Install (for teammates)
 
-1. Download the installer from the [Releases page](../../releases): **Sidebar-x.y.z-arm64.dmg** (Apple Silicon Mac), **Sidebar-x.y.z.dmg** (Intel Mac) or **Sidebar-Setup-x.y.z.exe** (Windows).
+1. Download the installer from the [Releases page](../../releases): **Sidebar-vX.Y.Z-arm64.dmg** (Mac with Apple chip), **Sidebar-vX.Y.Z-x64.dmg** (Intel Mac) or **Sidebar-Setup-vX.Y.Z.exe** (Windows).
 2. **Mac:** open the .dmg and drag Sidebar to Applications. **Windows:** run the installer.
 3. Open Sidebar, click **Settings → Import team setup…** and choose the `sidebar-team-setup.json` file your admin sent you. That's it.
 
@@ -91,14 +91,14 @@ npm run dist:win   # build .exe (on Windows)
 
 ### Releasing
 
-Push a version tag and GitHub Actions builds both installers and attaches them to a draft release:
+Push a version tag and GitHub Actions builds both installers and publishes them as a GitHub release:
 
 ```bash
 npm version patch   # bumps package.json and creates a tag
 git push --follow-tags
 ```
 
-Then publish the draft release on GitHub. You can also run the **Build installers** workflow manually to get the installers as downloadable artifacts.
+You can also run the **Build installers** workflow manually to get the installers as downloadable artifacts.
 
 ### Code signing (recommended before sharing widely)
 
