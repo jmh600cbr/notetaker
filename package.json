@@ -1,0 +1,86 @@
+{
+  "name": "sidebar-notes",
+  "productName": "Sidebar",
+  "version": "0.1.1",
+  "description": "The AI notetaker that never joins the call. Records and summarizes meetings from the background.",
+  "main": "src/main/main.js",
+  "author": "Harris Partners",
+  "license": "UNLICENSED",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check src/main/main.js && node --check src/main/store.js && node --check src/main/transcribe.js && node --check src/main/summarize.js && node --check src/preload.js && node --check src/renderer/app.js && node --check src/renderer/recorder.js",
+    "test": "node --test",
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
+    "dompurify": "^3.4.17",
+    "electron-audio-loopback": "^1.0.6",
+    "marked": "^18.1.1"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "ca.harrispartners.sidebar",
+    "productName": "Sidebar",
+    "copyright": "Harris Partners",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Sidebar records your microphone so your side of the conversation is in the notes.",
+        "NSAudioCaptureUsageDescription": "Sidebar records your computer's audio so the other people on your call are in the notes.",
+        "NSScreenCaptureUsageDescription": "macOS uses this permission to let Sidebar record your computer's audio. Sidebar never records your screen."
+      }
+    },
+    "dmg": {
+      "title": "Install Sidebar",
+      "artifactName": "Sidebar-v${version}-${arch}.${ext}"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "shortcutName": "Sidebar",
+      "artifactName": "Sidebar-Setup-v${version}.${ext}"
+    }
+  }
+}

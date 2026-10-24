@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob: mediastream:"
+    />
+    <title>Sidebar</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="nav">
+        <div class="brand drag">
+          <img src="../../assets/icon.png" alt="" />
+          <div>
+            <div class="brand-name">Sidebar</div>
+            <div class="brand-tag">Notes without the bot</div>
+          </div>
+        </div>
+        <button id="newBtn" class="btn primary block"><span class="dot"></span> New recording</button>
+        <input id="search" class="search" type="search" placeholder="Search notes" />
+        <ul id="meetingList" class="meeting-list"></ul>
+        <button id="settingsBtn" class="btn ghost block">Settings</button>
+      </aside>
+      <main id="view" class="view"></main>
+    </div>
+
+    <dialog id="settingsDialog" class="dialog">
+      <form method="dialog" id="settingsForm">
+        <h2>Settings</h2>
+
+        <section>
+          <h3>Connections</h3>
+          <label class="field">
+            <span>Deepgram API key <small>(transcription)</small></span>
+            <input name="deepgramApiKey" type="password" autocomplete="off" placeholder="Paste key" />
+            <a href="#" data-link="https://console.deepgram.com/">Get a Deepgram key</a>
+          </label>
+          <label class="field">
+            <span>Anthropic API key <small>(summaries)</small></span>
+            <input name="anthropicApiKey" type="password" autocomplete="off" placeholder="sk-ant-…" />
+            <a href="#" data-link="https://console.anthropic.com/settings/keys">Get an Anthropic key</a>
+          </label>
+          <div class="row">
+            <button type="button" id="importBtn" class="btn ghost">Import team setup…</button>
+            <button type="button" id="exportBtn" class="btn ghost">Export team setup…</button>
+          </div>
+          <p class="hint" id="encryptionHint"></p>
+        </section>
+
+        <section>
+          <h3>Notes</h3>
+          <label class="field">
+            <span>Default note style</span>
+            <select name="defaultTemplate">
+              <option value="court">Court hearing</option>
+              <option value="client">Client meeting</option>
+              <option value="general">General meeting</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Spoken language</span>
+            <select name="language">
+              <option value="en">English</option>
+              <option value="fr">French</option>
+              <option value="multi">English + French (mixed)</option>
+            </select>
+          </label>
+        </section>
+
+        <section>
+          <h3>Recording</h3>
+          <label class="toggle">
+            <input type="checkbox" name="headphones" />
+            <span>I usually wear headphones on calls <small>Labels your lines as “You”. Turn off if you use laptop speakers, to avoid duplicate lines.</small></span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" name="keepAudio" />
+            <span>Keep audio after notes are made <small>Off by default: audio is deleted once the transcript is saved.</small></span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" name="openAtLogin" />
+            <span>Open Sidebar when I log in <small>Starts quietly in the menu bar / system tray.</small></span>
+          </label>
+        </section>
+
+        <div class="dialog-actions">
+          <button value="cancel" class="btn ghost">Cancel</button>
+          <button value="save" class="btn primary" id="saveSettings">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="noticeDialog" class="dialog narrow">
+      <form method="dialog">
+        <h2>Before you record</h2>
+        <p>Sidebar records the audio playing on your computer and your microphone. It never joins or appears in the meeting.</p>
+        <ul class="notice-list">
+          <li><strong>Get consent.</strong> Recording laws differ by place. Make sure the people on the call know they're being recorded and agree, where the law requires it.</li>
+          <li><strong>Court hearings.</strong> Many courts prohibit or restrict recording proceedings, including virtual hearings, unless the court allows it. Check the court's rules or ask the court before you record.</li>
+          <li><strong>Confidentiality.</strong> Audio is sent to Deepgram for transcription and the transcript to Anthropic for summaries. Make sure that fits your firm's policies.</li>
+        </ul>
+        <label class="toggle">
+          <input type="checkbox" id="noticeAccept" />
+          <span>I understand and will use Sidebar responsibly.</span>
+        </label>
+        <div class="dialog-actions">
+          <button value="ok" class="btn primary" id="noticeOk" disabled>Continue</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="../../node_modules/marked/lib/marked.umd.js"></script>
+    <script src="../../node_modules/dompurify/dist/purify.min.js"></script>
+    <script src="recorder.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>

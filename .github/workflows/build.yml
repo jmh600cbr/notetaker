@@ -1,0 +1,110 @@
+name: Build installers
+
+# Every push builds the Mac and Windows installers. When package.json has a
+# version that hasn't been released yet, they're published as release
+# v<version>, so bumping the version is all it takes to ship.
+on:
+  push:
+    branches: [main, 'claude/**']
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: Build
+        shell: bash
+        run: |
+          # An empty CSC_LINK is read as a file path, so drop unset signing secrets.
+          extra=""
+          if [ -z "$CSC_LINK" ]; then
+            unset CSC_LINK CSC_KEY_PASSWORD
+            # Without a certificate, sign ad-hoc. A completely unsigned app is
+            # reported as "damaged" on Apple-chip Macs and can't be opened.
+            if [ "$RUNNER_OS" = "macOS" ]; then extra="-c.mac.identity=-"; fi
+          fi
+          if [ -z "$APPLE_ID" ]; then unset APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; fi
+          npx electron-builder --publish never $extra
+        env:
+          # Optional code signing. Leave these secrets unset to build unsigned installers.
+          CSC_LINK: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERTIFICATE_P12_BASE64 || secrets.WIN_CERTIFICATE_PFX_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERTIFICATE_PASSWORD || secrets.WIN_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Verify the Mac app's signature
+        if: runner.os == 'macOS'
+        run: |
+          for app in dist/mac*/Sidebar.app; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+            codesign -dv "$app" 2>&1 | grep -E "Signature|Identifier|Format"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidebar-${{ runner.os }}
+          path: |
+            dist/*.dmg
+            dist/*.exe
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check whether this version is already released
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="v$(node -p "require('./package.json').version")"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "Release $tag already exists; bump the version in package.json to publish a new one."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        if: steps.version.outputs.publish == 'true'
+        with:
+          path: installers
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        if: steps.version.outputs.publish == 'true'
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: Sidebar ${{ steps.version.outputs.tag }}
+          make_latest: true
+          files: installers/*
+          body: |
+            ## Download Sidebar
+
+            | Computer | File |
+            | --- | --- |
+            | Mac with Apple chip (M1 or newer) | `Sidebar-${{ steps.version.outputs.tag }}-arm64.dmg` |
+            | Mac with Intel chip | `Sidebar-${{ steps.version.outputs.tag }}-x64.dmg` |
+            | Windows | `Sidebar-Setup-${{ steps.version.outputs.tag }}.exe` |
+
+            Not sure which Mac you have? Apple menu → About This Mac: it shows either "Chip: Apple M…" or "Processor: Intel…".
+
+            These builds aren't signed with an Apple or Microsoft certificate yet, so the first launch needs one extra step:
+
+            - **Mac:** drag Sidebar to Applications and open it. When macOS says it can't verify Sidebar, click **Done**, then go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. You only need to do this once.
+            - **Windows:** if SmartScreen appears, click **More info → Run anyway**.
