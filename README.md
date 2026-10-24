@@ -49,7 +49,7 @@ Sidebar shows this notice before the first recording.
 
 **First recording on a Mac:** macOS asks for **Microphone** and **Screen & System Audio Recording** access. Sidebar uses the second permission only to hear the call audio; it never records your screen. After granting it, quit and reopen Sidebar once.
 
-> **Unsigned builds:** until the app is code-signed (see below), macOS says it "can't verify" Sidebar. Right-click the app and choose **Open**, or go to **System Settings → Privacy & Security → Open Anyway**. Windows SmartScreen may show "Windows protected your PC": click **More info → Run anyway**.
+> **Unsigned builds:** until the app is signed with an Apple Developer ID (see below), macOS says it can't verify Sidebar. Click **Done**, then go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. You only need to do this once. Windows SmartScreen may show "Windows protected your PC": click **More info → Run anyway**.
 
 ## Setup (for the admin, once)
 

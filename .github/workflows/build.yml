@@ -31,9 +31,15 @@ jobs:
         shell: bash
         run: |
           # An empty CSC_LINK is read as a file path, so drop unset signing secrets.
-          if [ -z "$CSC_LINK" ]; then unset CSC_LINK CSC_KEY_PASSWORD; fi
+          extra=""
+          if [ -z "$CSC_LINK" ]; then
+            unset CSC_LINK CSC_KEY_PASSWORD
+            # Without a certificate, sign ad-hoc. A completely unsigned app is
+            # reported as "damaged" on Apple-chip Macs and can't be opened.
+            if [ "$RUNNER_OS" = "macOS" ]; then extra="-c.mac.identity=-"; fi
+          fi
           if [ -z "$APPLE_ID" ]; then unset APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; fi
-          npx electron-builder --publish never
+          npx electron-builder --publish never $extra
         env:
           # Optional code signing. Leave these secrets unset to build unsigned installers.
           CSC_LINK: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERTIFICATE_P12_BASE64 || secrets.WIN_CERTIFICATE_PFX_BASE64 }}
@@ -41,6 +47,13 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Verify the Mac app's signature
+        if: runner.os == 'macOS'
+        run: |
+          for app in dist/mac*/Sidebar.app; do
+            codesign --verify --deep --strict --verbose=2 "$app"
+            codesign -dv "$app" 2>&1 | grep -E "Signature|Identifier|Format"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: sidebar-${{ runner.os }}
@@ -91,4 +104,7 @@ jobs:
 
             Not sure which Mac you have? Apple menu → About This Mac: it shows either "Chip: Apple M…" or "Processor: Intel…".
 
-            These builds aren't code-signed yet. **Mac:** right-click Sidebar in Applications → Open (or System Settings → Privacy & Security → Open Anyway). **Windows:** if SmartScreen appears, click More info → Run anyway.
+            These builds aren't signed with an Apple or Microsoft certificate yet, so the first launch needs one extra step:
+
+            - **Mac:** drag Sidebar to Applications and open it. When macOS says it can't verify Sidebar, click **Done**, then go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**. You only need to do this once.
+            - **Windows:** if SmartScreen appears, click **More info → Run anyway**.
