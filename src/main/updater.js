@@ -4,8 +4,9 @@
 // and installs it when Sidebar restarts.
 //
 // Mac: electron-updater requires an Apple Developer ID signature, which these
-// builds don't have yet. Instead we download the new .dmg ourselves, stage the
-// new app next to the installed one, and swap them when Sidebar restarts.
+// builds don't have yet. Instead we download the new .dmg ourselves in the
+// background, stage the new app next to the installed one, and swap them when
+// the user clicks "Restart to update" (or the next time Sidebar quits).
 // Files Sidebar downloads itself aren't quarantined, so macOS doesn't show
 // the "can't verify" prompt again.
 const fs = require('fs');
@@ -131,7 +132,27 @@ class Updater {
       return;
     }
     this.macAsset = asset;
-    this.set({ status: 'available', version, error: null });
+    if (!(await this.canSelfInstall(currentBundlePath()))) {
+      // e.g. installed by an administrator: offer a manual download instead.
+      this.set({ status: 'available', version, manual: true, error: null });
+      return;
+    }
+    this.set({ status: 'available', version, manual: false, error: null });
+    await this.prepareMac();
+  }
+
+  // Downloads and stages the update in the background, then offers a restart.
+  async prepareMac() {
+    if (this.busy) return;
+    this.busy = true;
+    try {
+      await this.stageMac();
+      this.set({ status: 'ready', error: null });
+    } catch (err) {
+      this.set({ status: 'error', error: `Update failed: ${err.message}` });
+    } finally {
+      this.busy = false;
+    }
   }
 
   async downloadMac(asset, dir) {
@@ -181,12 +202,6 @@ class Updater {
   // installed app isn't touched until swapStaged().
   async stageMac() {
     const bundle = currentBundlePath();
-    if (!(await this.canSelfInstall(bundle))) {
-      // e.g. installed by an administrator: hand over to a manual install.
-      shell.openExternal(RELEASES_PAGE);
-      this.set({ status: 'available' });
-      return false;
-    }
 
     const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'sidebar-update-'));
     const staged = `${bundle}.update`;
@@ -215,7 +230,6 @@ class Updater {
         throw new Error(`Sidebar ${stagedVersion} needs macOS ${minOs} or later.`);
       }
       this.stagedPath = staged;
-      return true;
     } catch (err) {
       await fs.promises.rm(staged, { recursive: true, force: true }).catch(() => {});
       throw err;
@@ -308,24 +322,12 @@ class Updater {
       }
       return;
     }
-    if (process.platform === 'darwin' && (this.state.status === 'available' || (this.state.status === 'error' && this.macAsset))) {
-      this.busy = true;
-      try {
-        const staged = await this.stageMac();
-        if (!staged) return;
-        // Restart right away unless a recording or notes are in progress; then
-        // it's applied on "Restart to update" or the next quit.
-        if (this.canRestart()) {
-          this.swapStaged();
-          this.relaunch();
-        } else {
-          this.set({ status: 'ready' });
-        }
-      } catch (err) {
-        this.set({ status: 'error', error: `Update failed: ${err.message}` });
-      } finally {
-        this.busy = false;
-      }
+    if (process.platform === 'darwin' && this.state.status === 'available' && this.state.manual) {
+      shell.openExternal(RELEASES_PAGE);
+      return;
+    }
+    if (process.platform === 'darwin' && this.state.status === 'error' && this.macAsset) {
+      await this.prepareMac();
     }
   }
 }
