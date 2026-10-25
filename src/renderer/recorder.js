@@ -1,66 +1,118 @@
-// Records the microphone and the computer's audio output into one stereo file:
+// Records the microphone and the computer's audio output into stereo files:
 // left channel = microphone (you), right channel = computer audio (the call).
 // Nothing joins the meeting; this only listens to your own device.
+//
+// Hearings can't be repeated, so the recorder watches itself: if a device
+// drops out (headset unplugged, audio service restarted, laptop woke from
+// sleep) it restarts capture into the next audio part, and if audio can't be
+// saved it keeps it in memory and keeps retrying, reporting both to the app.
+
+const CHUNK_MS = 5000;
+const STALL_MS = 20000;
+const RESTART_ATTEMPTS = 3;
 
 class Recorder {
-  constructor() {
-    this.state = 'idle'; // idle | recording | paused
-    this.systemAudio = false;
-    this.chunkChain = Promise.resolve();
+  constructor({ writeChunk, onFault, skipSystemAudio = false }) {
+    this.writeChunk = writeChunk; // (part, ArrayBuffer) => Promise
+    this.onFault = onFault || (() => {});
+    this.skipSystemAudio = skipSystemAudio;
+    this.state = 'idle'; // idle | recording | paused | failed
+    this.part = 0;
+    this.capture = null;
+    this.queue = [];
+    this.pumping = null;
+    this.writeFailing = false;
     this.elapsedMs = 0;
     this.resumedAt = 0;
+    this.lastChunkAt = 0;
   }
 
-  async start(onChunk) {
-    this.onChunk = onChunk;
-    this.mic = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      video: false,
-    });
+  get systemAudio() {
+    return Boolean(this.capture && this.capture.system);
+  }
 
-    try {
-      this.system = await this.captureSystemAudio();
-      this.systemAudio = true;
-    } catch (err) {
-      console.warn('System audio unavailable:', err);
-      this.system = null;
-      this.systemAudio = false;
-      this.systemError = err;
-    }
+  get micAudio() {
+    return Boolean(this.capture && this.capture.mic);
+  }
 
-    this.ctx = new AudioContext({ sampleRate: 48000 });
-    await this.ctx.resume();
-    const merger = this.ctx.createChannelMerger(2);
-    const destination = this.ctx.createMediaStreamDestination();
-    destination.channelCount = 2;
-
-    const micSource = this.ctx.createMediaStreamSource(this.mic);
-    micSource.connect(merger, 0, 0);
-    this.micAnalyser = this.analyser(micSource);
-
-    if (this.system) {
-      const systemSource = this.ctx.createMediaStreamSource(this.system);
-      systemSource.connect(merger, 0, 1);
-      this.systemAnalyser = this.analyser(systemSource);
-    }
-    merger.connect(destination);
-
-    this.mediaRecorder = new MediaRecorder(destination.stream, {
-      mimeType: 'audio/webm;codecs=opus',
-      audioBitsPerSecond: 64000,
-    });
-    this.mediaRecorder.ondataavailable = (event) => {
-      if (!event.data || !event.data.size) return;
-      // Keep chunks in order and write them to disk as we go, so a crash
-      // never loses more than a few seconds.
-      this.chunkChain = this.chunkChain
-        .then(() => event.data.arrayBuffer())
-        .then((buf) => this.onChunk(buf))
-        .catch((err) => console.error('Failed to save audio chunk', err));
-    };
-    this.mediaRecorder.start(5000);
+  async start() {
+    this.capture = await this.openCapture(0);
     this.state = 'recording';
     this.resumedAt = Date.now();
+    this.lastChunkAt = Date.now();
+    this.watchdog = setInterval(() => this.checkHealth(), 5000);
+  }
+
+  // ---- capture ----
+
+  async openCapture(part) {
+    const capture = { part, mic: null, system: null, closed: false };
+    try {
+      capture.mic = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      });
+    } catch (err) {
+      console.warn('Microphone unavailable:', err);
+      capture.micError = err;
+    }
+    if (!this.skipSystemAudio) {
+      try {
+        capture.system = await this.captureSystemAudio();
+      } catch (err) {
+        console.warn('System audio unavailable:', err);
+        capture.systemError = err;
+      }
+    }
+    if (!capture.mic && !capture.system) {
+      throw new Error(
+        `Sidebar couldn't use the microphone or the computer's audio (${(capture.micError || capture.systemError || {}).message || 'no audio source'}).`,
+      );
+    }
+
+    try {
+      capture.ctx = new AudioContext({ sampleRate: 48000 });
+      await capture.ctx.resume();
+      const merger = capture.ctx.createChannelMerger(2);
+      const destination = capture.ctx.createMediaStreamDestination();
+      destination.channelCount = 2;
+      if (capture.mic) {
+        const src = capture.ctx.createMediaStreamSource(capture.mic);
+        src.connect(merger, 0, 0);
+        capture.micAnalyser = this.analyser(capture.ctx, src);
+      }
+      if (capture.system) {
+        const src = capture.ctx.createMediaStreamSource(capture.system);
+        src.connect(merger, 0, 1);
+        capture.systemAnalyser = this.analyser(capture.ctx, src);
+      }
+      merger.connect(destination);
+
+      capture.recorder = new MediaRecorder(destination.stream, {
+        mimeType: 'audio/webm;codecs=opus',
+        audioBitsPerSecond: 64000,
+      });
+      capture.recorder.ondataavailable = (event) => {
+        if (!event.data || !event.data.size) return;
+        this.lastChunkAt = Date.now();
+        this.enqueue(part, event.data);
+      };
+      capture.recorder.onerror = (event) => this.fault(capture, `recording error: ${event.error ? event.error.message : 'unknown'}`);
+      capture.ctx.onstatechange = () => {
+        if (capture.ctx.state !== 'running' && !capture.closed) this.fault(capture, `audio engine ${capture.ctx.state}`);
+      };
+      for (const [name, stream] of [['microphone', capture.mic], ['computer audio', capture.system]]) {
+        if (!stream) continue;
+        for (const track of stream.getAudioTracks()) {
+          track.addEventListener('ended', () => this.fault(capture, `${name} stopped`));
+        }
+      }
+      capture.recorder.start(CHUNK_MS);
+      return capture;
+    } catch (err) {
+      await this.closeCapture(capture);
+      throw err;
+    }
   }
 
   async captureSystemAudio() {
@@ -95,8 +147,110 @@ class Recorder {
     return stream;
   }
 
-  analyser(source) {
-    const node = this.ctx.createAnalyser();
+  // Stops a capture, waiting for its last chunk to be queued.
+  async closeCapture(capture) {
+    if (!capture || capture.closed) return;
+    capture.closed = true;
+    const rec = capture.recorder;
+    if (rec && rec.state !== 'inactive') {
+      const stopped = new Promise((resolve) => {
+        rec.onstop = resolve;
+        setTimeout(resolve, 3000); // a broken recorder may never fire onstop
+      });
+      try {
+        rec.stop();
+      } catch {
+        // already stopped
+      }
+      await stopped;
+    }
+    for (const stream of [capture.mic, capture.system]) {
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+    }
+    if (capture.ctx && capture.ctx.state !== 'closed') await capture.ctx.close().catch(() => {});
+  }
+
+  // ---- self-healing ----
+
+  checkHealth() {
+    if (this.state === 'recording' && !this.restarting && Date.now() - this.lastChunkAt > STALL_MS) {
+      this.fault(this.capture, 'no audio arriving');
+    }
+  }
+
+  async fault(capture, reason) {
+    if (capture !== this.capture || capture.closed || this.restarting) return;
+    if (this.state !== 'recording' && this.state !== 'paused') return;
+    this.restarting = true;
+    const wasPaused = this.state === 'paused';
+    await this.closeCapture(capture);
+    let error = null;
+    for (let attempt = 1; attempt <= RESTART_ATTEMPTS; attempt++) {
+      if (this.state === 'idle') break; // stopped meanwhile
+      try {
+        this.part += 1;
+        this.capture = await this.openCapture(this.part);
+        if (wasPaused) this.capture.recorder.pause();
+        this.lastChunkAt = Date.now();
+        error = null;
+        break;
+      } catch (err) {
+        error = err;
+        await new Promise((r) => setTimeout(r, 2000 * attempt));
+      }
+    }
+    this.restarting = false;
+    if (this.state === 'idle') return;
+    if (error) {
+      if (!wasPaused) this.elapsedMs += Date.now() - this.resumedAt;
+      this.state = 'failed';
+      this.onFault({ kind: 'capture', recovered: false, reason, error: error.message });
+    } else {
+      this.onFault({ kind: 'capture', recovered: true, reason, systemAudio: this.systemAudio, micAudio: this.micAudio });
+    }
+  }
+
+  // ---- saving ----
+
+  enqueue(part, blob) {
+    this.queue.push({ part, blob });
+    if (!this.pumping) this.pumping = this.pump().finally(() => (this.pumping = null));
+  }
+
+  // Writes queued chunks strictly in order. A chunk that fails to save is
+  // retried until it succeeds; it is never skipped (the first chunk of each
+  // part holds the file header, so skipping it would ruin the whole part).
+  async pump() {
+    while (this.queue.length) {
+      const item = this.queue[0];
+      try {
+        if (!item.buf) item.buf = await item.blob.arrayBuffer();
+        await this.writeChunk(item.part, item.buf);
+        this.queue.shift();
+        if (this.writeFailing) {
+          this.writeFailing = false;
+          this.onFault({ kind: 'disk', recovered: true });
+        }
+      } catch (err) {
+        if (!this.writeFailing) {
+          this.writeFailing = true;
+          this.onFault({ kind: 'disk', recovered: false, error: err.message });
+        }
+        item.tries = (item.tries || 0) + 1;
+        if (this.stopping && item.tries > 3) throw err;
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+    }
+  }
+
+  unsavedSeconds() {
+    return Math.round((this.queue.length * CHUNK_MS) / 1000);
+  }
+
+  // ---- levels & time ----
+
+  analyser(ctx, source) {
+    const node = ctx.createAnalyser();
     node.fftSize = 1024;
     source.connect(node);
     return node;
@@ -113,7 +267,9 @@ class Recorder {
   }
 
   levels() {
-    return { mic: Recorder.level(this.micAnalyser), system: Recorder.level(this.systemAnalyser) };
+    const c = this.capture;
+    if (!c || c.closed || this.state !== 'recording') return { mic: 0, system: 0 };
+    return { mic: Recorder.level(c.micAnalyser), system: Recorder.level(c.systemAnalyser) };
   }
 
   elapsedSeconds() {
@@ -121,36 +277,45 @@ class Recorder {
     return Math.floor((this.elapsedMs + running) / 1000);
   }
 
+  // ---- controls ----
+
   pause() {
     if (this.state !== 'recording') return;
-    this.mediaRecorder.pause();
+    const rec = this.capture.recorder;
+    // Save what's buffered now, so nothing sits in memory through a long recess.
+    if (rec.state === 'recording') {
+      rec.requestData();
+      rec.pause();
+    }
     this.elapsedMs += Date.now() - this.resumedAt;
     this.state = 'paused';
   }
 
   resume() {
     if (this.state !== 'paused') return;
-    this.mediaRecorder.resume();
+    const rec = this.capture.recorder;
+    if (rec.state === 'paused') rec.resume();
     this.resumedAt = Date.now();
+    this.lastChunkAt = Date.now();
     this.state = 'recording';
   }
 
+  // Stops recording and waits until every chunk is saved. Resolves with the
+  // recorded seconds and how many seconds (if any) couldn't be saved.
   async stop() {
     const seconds = this.elapsedSeconds();
-    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-      const stopped = new Promise((resolve) => {
-        this.mediaRecorder.onstop = resolve;
-      });
-      this.mediaRecorder.stop();
-      await stopped;
-    }
-    await this.chunkChain;
-    for (const stream of [this.mic, this.system]) {
-      if (stream) stream.getTracks().forEach((t) => t.stop());
-    }
-    if (this.ctx) await this.ctx.close();
     this.state = 'idle';
-    return seconds;
+    clearInterval(this.watchdog);
+    await this.closeCapture(this.capture);
+    this.stopping = true;
+    let unsaved = 0;
+    try {
+      if (this.pumping) await this.pumping;
+      if (this.queue.length) await this.pump();
+    } catch {
+      unsaved = this.unsavedSeconds();
+    }
+    return { seconds, unsaved };
   }
 }
 

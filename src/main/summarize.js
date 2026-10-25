@@ -3,8 +3,9 @@ const Anthropic = require('@anthropic-ai/sdk');
 
 const MODEL = 'claude-opus-5-5';
 
-// Kept identical for summaries and questions so the transcript prefix is
-// cached once and reused when someone asks follow-up questions.
+// The system prompt and transcript block come first and don't change between
+// requests, so repeated questions about the same meeting reuse the cached
+// transcript instead of paying for it again.
 const SYSTEM_PROMPT = `You are Sidebar, a meticulous note-taker for a law firm. You work only from the meeting transcript you are given.
 
 Ground rules:
@@ -89,10 +90,25 @@ function formatTranscript(segments, speakers) {
     .join('\n');
 }
 
+function attr(value) {
+  return String(value).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+}
+
+// The meeting's date and time as the user experienced it (local time), so
+// relative deadlines like "within 14 days" or "next Tuesday" resolve correctly.
+function localWhen(iso) {
+  const d = new Date(iso);
+  return {
+    date: d.toLocaleDateString('en-CA', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+    time: d.toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }),
+  };
+}
+
 function transcriptBlock(meeting, segments) {
+  const when = localWhen(meeting.createdAt);
   return {
     type: 'text',
-    text: `<meeting title="${meeting.title.replace(/"/g, "'")}" date="${meeting.createdAt.slice(0, 10)}">\n<transcript>\n${formatTranscript(segments, meeting.speakers || {})}\n</transcript>\n</meeting>`,
+    text: `<meeting title="${attr(meeting.title)}" date="${attr(when.date)}" started="${attr(when.time)}">\n<transcript note="Timestamps are positions in the recording; paused time is not counted.">\n${formatTranscript(segments, meeting.speakers || {})}\n</transcript>\n</meeting>`,
     cache_control: { type: 'ephemeral' },
   };
 }
@@ -108,7 +124,17 @@ function friendlyError(err) {
     return new Error('Could not reach Claude. Check your internet connection and click Retry.');
   }
   if (err instanceof Anthropic.APIError) {
-    return new Error(`Claude returned an error (${err.status}): ${err.message}`);
+    // The SDK puts the whole JSON body in err.message; dig out the readable part.
+    const body = err.error && err.error.error ? err.error.error : err.error || {};
+    const type = body.type || '';
+    const detail = body.message || '';
+    if (type === 'overloaded_error' || err.status === 529 || (err.status && err.status >= 500)) {
+      return new Error('Claude is busy right now. Wait a minute and click Retry.');
+    }
+    if (/credit balance/i.test(detail)) {
+      return new Error('Your Anthropic account is out of credit. Add credit, then click Retry.');
+    }
+    return new Error(`Claude couldn't process this${err.status ? ` (${err.status})` : ''}: ${detail || 'unknown error'}`);
   }
   return err;
 }
@@ -212,4 +238,4 @@ function answerQuestion({ apiKey, meeting, segments, question }) {
   return askClaude({ apiKey, meeting, segments, instructions, effort: 'medium' });
 }
 
-module.exports = { summarize, answerQuestion, identifySpeakers, formatTranscript, formatTimestamp, TEMPLATES };
+module.exports = { summarize, answerQuestion, identifySpeakers, formatTranscript, formatTimestamp, transcriptBlock, TEMPLATES };

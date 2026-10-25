@@ -32,10 +32,11 @@ contextBridge.exposeInMainWorld('sidebar', {
   meetingText: (id) => invoke('meetings:copyText', id),
 
   startRecording: (opts) => invoke('recording:start', opts),
-  sendChunk: (id, data) => invoke('recording:chunk', id, data),
-  stopRecording: (id, durationSec) => invoke('recording:stop', id, durationSec),
+  sendChunk: (id, part, data) => invoke('recording:chunk', id, part, data),
+  stopRecording: (id, durationSec, opts) => invoke('recording:stop', id, durationSec, opts),
   discardRecording: (id) => invoke('recording:discard', id),
-  setRecordingState: (recording) => ipcRenderer.send('recording:state', recording),
+  recordingInfo: (info) => ipcRenderer.send('recording:info', info),
+  recordingFault: (fault) => ipcRenderer.send('recording:fault', fault),
 
   getUpdate: () => invoke('updater:get'),
   checkForUpdates: () => invoke('updater:check'),

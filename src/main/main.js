@@ -13,10 +13,13 @@ const {
   shell,
   safeStorage,
   systemPreferences,
+  powerSaveBlocker,
+  powerMonitor,
+  net,
 } = require('electron');
 const { initMain: initAudioLoopback } = require('electron-audio-loopback');
-const { Store } = require('./store');
-const { transcribeFile } = require('./transcribe');
+const { Store, sanitizeSettings } = require('./store');
+const { transcribeMeeting } = require('./transcribe');
 const { summarize, answerQuestion, identifySpeakers, formatTranscript } = require('./summarize');
 const { Updater } = require('./updater');
 
@@ -32,9 +35,16 @@ const ASSETS = path.join(__dirname, '..', '..', 'assets');
 let mainWindow = null;
 let tray = null;
 let store = null;
-let isRecording = false;
+// The meeting being recorded, from the moment it's created until it's
+// stopped or discarded (including the seconds while capture is starting).
+let activeRecordingId = null;
+let recordingInfo = { systemAudio: true, micAudio: true };
+let sleepBlocker = null;
 let isQuitting = false;
 let updater = null;
+
+const isRecording = () => activeRecordingId !== null;
+const MIN_FREE_BYTES = 300 * 1024 * 1024;
 
 // A second launch (e.g. clicking the desktop shortcut while Sidebar sits in
 // the tray) must exit before doing anything, or it would mark the running
@@ -84,6 +94,19 @@ function createWindow() {
     },
   });
   mainWindow.removeMenu();
+  // Windows logoff/shutdown: don't start installing an update mid-shutdown.
+  mainWindow.on('session-end', () => updater && updater.onSessionEnd());
+
+  // Grant only what Sidebar uses (microphone/computer audio, notifications,
+  // copying notes), and only to its own page.
+  const allowed = new Set(['media', 'display-capture', 'notifications', 'clipboard-sanitized-write']);
+  const ownPage = (webContents) => webContents === mainWindow.webContents;
+  mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+    callback(ownPage(webContents) && allowed.has(permission));
+  });
+  mainWindow.webContents.session.setPermissionCheckHandler((webContents, permission) => {
+    return Boolean(webContents) && ownPage(webContents) && allowed.has(permission);
+  });
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   mainWindow.once('ready-to-show', () => {
     const openedAtLogin =
@@ -106,6 +129,39 @@ function createWindow() {
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+
+  // If the window's process dies, the recording it was running stops. Don't
+  // pretend otherwise: keep the audio, tell the user, and bring the window back.
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    if (details.reason === 'clean-exit') return;
+    if (activeRecordingId) {
+      const id = activeRecordingId;
+      setRecording(null);
+      try {
+        store.updateMeeting(id, {
+          status: 'error',
+          error: 'Sidebar stopped unexpectedly during this recording. The audio up to that point is saved: click "Retry" to make notes.',
+        });
+      } catch {
+        // meeting gone
+      }
+      notify('Sidebar stopped recording', 'Something went wrong and the recording stopped. The audio so far is saved.', id);
+      showWindow();
+    }
+    if (!mainWindow.isDestroyed()) mainWindow.reload();
+  });
+}
+
+function setRecording(id) {
+  activeRecordingId = id;
+  // Keep the computer awake while recording (an in-person hearing can run
+  // past the idle-sleep timer with nobody touching the laptop).
+  if (id && sleepBlocker === null) sleepBlocker = powerSaveBlocker.start('prevent-app-suspension');
+  if (!id && sleepBlocker !== null) {
+    powerSaveBlocker.stop(sleepBlocker);
+    sleepBlocker = null;
+  }
+  refreshTray();
 }
 
 function trayImage(recording) {
@@ -118,12 +174,17 @@ function trayImage(recording) {
 
 function refreshTray() {
   if (!tray) return;
-  tray.setImage(trayImage(isRecording));
-  tray.setToolTip(isRecording ? 'Sidebar — recording' : 'Sidebar');
+  const recording = isRecording();
+  const partial = recording && (!recordingInfo.systemAudio || !recordingInfo.micAudio);
+  tray.setImage(trayImage(recording));
+  tray.setToolTip(
+    !recording ? 'Sidebar' : partial ? `Sidebar — recording ${recordingInfo.systemAudio ? 'call audio only' : 'microphone only'}` : 'Sidebar — recording',
+  );
   tray.setContextMenu(
     Menu.buildFromTemplate([
+      ...(partial ? [{ label: recordingInfo.systemAudio ? '⚠ Microphone not recorded' : '⚠ Call audio not recorded', enabled: false }] : []),
       {
-        label: isRecording ? 'Stop recording' : 'Start recording',
+        label: recording ? 'Stop recording' : 'Start recording',
         accelerator: SHORTCUT,
         click: toggleRecording,
       },
@@ -175,24 +236,51 @@ async function processMeeting(id) {
   try {
     let meeting = store.getMeeting(id);
     let segments = store.getTranscript(id);
+    let keepAudio = settings.keepAudio;
 
-    if (!segments.length) {
-      if (!fs.existsSync(store.audioPath(id))) {
-        throw new Error('The audio for this meeting is no longer available.');
-      }
+    if (!store.hasTranscript(id)) {
+      const files = store.audioFiles(id);
+      if (!files.length) throw new Error('The audio for this meeting is no longer available.');
       broadcastMeeting(store.updateMeeting(id, { status: 'transcribing', error: null }));
-      const result = await transcribeFile(store.audioPath(id), {
+      const result = await transcribeMeeting(files, {
         apiKey: settings.deepgramApiKey,
         language: settings.language,
         keyterms: meeting.keyterms,
         headphones: settings.headphones,
+        // Chromium's network stack: honours system proxies and has no
+        // 5-minute limit, so long hearings on slow connections still upload.
+        fetchImpl: (url, init) => net.fetch(url, init),
       });
       segments = result.segments;
       store.saveTranscript(id, segments);
+
+      // If far less audio reached the file than the time spent recording,
+      // capture failed somewhere. Say so, and keep the audio for checking.
+      let warning = null;
+      const recorded = meeting.durationSec || 0;
+      if (recorded > 60 && result.durationSec < recorded * 0.8 - 30) {
+        warning = `Only ${humanDuration(result.durationSec)} of the ${humanDuration(recorded)} recording reached the audio file. Parts of the meeting may be missing from these notes; the audio has been kept.`;
+        keepAudio = true;
+      }
       meeting = store.updateMeeting(id, {
         speakers: result.speakers,
         durationSec: result.durationSec || meeting.durationSec,
+        recordedSec: recorded || null,
+        warning,
       });
+
+      if (!segments.length) {
+        // Nothing was said (or nothing was captured). Not something Retry can
+        // fix, so finish here and keep the audio so the user can check it.
+        meeting = store.updateMeeting(id, {
+          status: 'ready',
+          error: null,
+          summary: '_No speech was detected in this recording. If you expected speech, check that the microphone and call audio were working; the audio has been kept._',
+        });
+        broadcastMeeting(meeting);
+        notify('No speech detected', meeting.title, id);
+        return;
+      }
 
       // Put names to voices. Nice to have, so a failure here never blocks the notes.
       broadcastMeeting(store.updateMeeting(id, { status: 'identifying' }));
@@ -216,11 +304,12 @@ async function processMeeting(id) {
     const summary = await summarize({ apiKey: settings.anthropicApiKey, meeting, segments });
     meeting = store.updateMeeting(id, { summary, status: 'ready', error: null });
 
-    if (!settings.keepAudio) meeting = store.deleteAudio(id);
+    if (!keepAudio && !meeting.warning) meeting = store.deleteAudio(id);
     broadcastMeeting(meeting);
     notify('Your notes are ready', meeting.title, id);
   } catch (err) {
     try {
+      // Existing notes (e.g. when regenerating) stay as they are.
       broadcastMeeting(store.updateMeeting(id, { status: 'error', error: err.message }));
       notify('Sidebar couldn’t finish your notes', err.message, id);
     } catch {
@@ -236,7 +325,7 @@ function meetingToMarkdown(meeting, segments) {
   return [
     `# ${meeting.title}`,
     '',
-    `_${date} · ${Math.round((meeting.durationSec || 0) / 60)} min · Notes by Sidebar_`,
+    `_${date} · ${Math.max(1, Math.round((meeting.durationSec || 0) / 60))} min · Notes by Sidebar_`,
     '',
     meeting.summary || '_No summary yet._',
     '',
@@ -255,8 +344,9 @@ function meetingToMarkdown(meeting, segments) {
 // ---- IPC ----
 
 function registerIpc() {
+  // The UI never receives the API keys themselves, only whether they're set.
   ipcMain.handle('settings:get', () => ({
-    ...store.getSettings(),
+    ...store.getPublicSettings(),
     platform: process.platform,
     shortcut: SHORTCUT,
     encrypted: store.canEncrypt(),
@@ -281,7 +371,28 @@ function registerIpc() {
     if (canceled || !filePaths[0]) return null;
     const data = JSON.parse(fs.readFileSync(filePaths[0], 'utf8'));
     const allowed = ['deepgramApiKey', 'anthropicApiKey', 'defaultTemplate', 'language', 'headphones', 'keepAudio'];
-    const patch = Object.fromEntries(Object.entries(data).filter(([k]) => allowed.includes(k)));
+    const patch = sanitizeSettings(Object.fromEntries(Object.entries(data).filter(([k]) => allowed.includes(k))));
+    if (!Object.keys(patch).length) throw new Error('Not a Sidebar setup file');
+
+    // A setup file decides where meeting audio and transcripts are sent, so
+    // show exactly what it changes before applying it.
+    const labels = {
+      deepgramApiKey: 'Deepgram key (transcription) will be replaced',
+      anthropicApiKey: 'Anthropic key (summaries) will be replaced',
+      defaultTemplate: `Default note style: ${patch.defaultTemplate}`,
+      language: `Spoken language: ${patch.language}`,
+      headphones: `Headphones mode: ${patch.headphones ? 'on' : 'off'}`,
+      keepAudio: `Keep audio after notes: ${patch.keepAudio ? 'on' : 'off'}`,
+    };
+    const { response } = await dialog.showMessageBox(mainWindow, {
+      type: 'question',
+      buttons: ['Import', 'Cancel'],
+      defaultId: 0,
+      cancelId: 1,
+      message: 'Import this team setup?',
+      detail: `${Object.keys(patch).map((k) => `• ${labels[k]}`).join('\n')}\n\nOnly import setup files from someone you trust: meeting audio and transcripts are sent to the accounts these keys belong to.`,
+    });
+    if (response !== 0) return null;
     return store.saveSettings(patch);
   });
 
@@ -291,7 +402,7 @@ function registerIpc() {
       defaultPath: 'sidebar-team-setup.json',
     });
     if (canceled || !filePath) return false;
-    const s = store.getSettings();
+    const s = store.getSettings({ includeEnv: false });
     const data = {
       deepgramApiKey: s.deepgramApiKey,
       anthropicApiKey: s.anthropicApiKey,
@@ -300,7 +411,8 @@ function registerIpc() {
       headphones: s.headphones,
       keepAudio: s.keepAudio,
     };
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
+    // Contains API keys: readable by the current user only.
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), { mode: 0o600 });
     return true;
   });
 
@@ -361,8 +473,8 @@ function registerIpc() {
     return true;
   });
 
+  // The current notes stay until the new ones succeed.
   ipcMain.handle('meetings:resummarize', (_e, id) => {
-    broadcastMeeting(store.updateMeeting(id, { summary: '' }));
     processMeeting(id);
     return true;
   });
@@ -379,7 +491,7 @@ function registerIpc() {
 
   ipcMain.handle('meetings:export', async (_e, id) => {
     const meeting = store.getMeeting(id);
-    const safeName = meeting.title.replace(/[^\w\- ]+/g, '').trim() || 'meeting-notes';
+    const safeName = safeFileName(meeting.title);
     const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
       title: 'Export notes',
       defaultPath: `${safeName}.md`,
@@ -396,36 +508,86 @@ function registerIpc() {
   });
 
   ipcMain.handle('recording:start', (_e, opts) => {
+    if (activeRecordingId) throw new Error('Sidebar is already recording.');
+    const free = store.freeSpace();
+    if (free !== null && free < MIN_FREE_BYTES) {
+      throw new Error(`Your disk is almost full (${Math.round(free / 1048576)} MB free). Free up some space and try again.`);
+    }
     const settings = store.getSettings();
     const meeting = store.createMeeting({
-      title: opts.title,
-      template: opts.template || settings.defaultTemplate,
-      keyterms: (opts.keyterms || []).slice(0, 50),
+      title: String(opts.title || '').slice(0, 200),
+      template: ['court', 'client', 'general'].includes(opts.template) ? opts.template : settings.defaultTemplate,
+      keyterms: (Array.isArray(opts.keyterms) ? opts.keyterms : []).map(String).slice(0, 50),
     });
+    recordingInfo = { systemAudio: true, micAudio: true };
+    setRecording(meeting.id);
     return broadcastMeeting(meeting);
   });
 
-  ipcMain.handle('recording:chunk', (_e, id, data) => {
-    store.appendAudio(id, Buffer.from(data));
+  ipcMain.handle('recording:chunk', (_e, id, part, data) => {
+    if (!Number.isInteger(part) || part < 0 || part > 999) throw new Error('Invalid audio part');
+    store.appendAudio(id, part, Buffer.from(data));
     return true;
   });
 
-  ipcMain.handle('recording:stop', (_e, id, durationSec) => {
-    broadcastMeeting(store.updateMeeting(id, { durationSec: Math.round(durationSec || 0) }));
+  ipcMain.handle('recording:stop', (_e, id, durationSec, { quitting = false, unsaved = 0 } = {}) => {
+    if (activeRecordingId === id) setRecording(null);
+    const patch = { durationSec: Math.round(durationSec || 0) };
+    if (unsaved) {
+      patch.warning = `About ${unsaved} seconds of audio at the end couldn't be saved (the disk may be full).`;
+    }
+    if (quitting) {
+      // Don't start uploading while the app is closing.
+      broadcastMeeting(store.updateMeeting(id, {
+        ...patch,
+        status: 'error',
+        error: 'Sidebar was closed during this recording. The audio is saved: click "Retry" to make notes.',
+      }));
+      return true;
+    }
+    broadcastMeeting(store.updateMeeting(id, patch));
     processMeeting(id);
     return true;
   });
 
   ipcMain.handle('recording:discard', (_e, id) => {
+    if (activeRecordingId === id) setRecording(null);
     store.deleteMeeting(id);
     return true;
   });
 
   ipcMain.on('window:show', showWindow);
 
-  ipcMain.on('recording:state', (_e, recording) => {
-    isRecording = Boolean(recording);
+  // What's being captured right now. If the call audio or the microphone is
+  // missing, make sure the user knows even with the window hidden.
+  ipcMain.on('recording:info', (_e, info) => {
+    const before = recordingInfo;
+    recordingInfo = { systemAudio: Boolean(info.systemAudio), micAudio: Boolean(info.micAudio) };
     refreshTray();
+    const visible = mainWindow && mainWindow.isVisible() && mainWindow.isFocused();
+    if (info.started && !visible) {
+      notify('Sidebar is recording', `Press ${shortcutLabel()} to stop.`);
+    }
+    if (!recordingInfo.systemAudio && (before.systemAudio || info.started)) {
+      notify('Call audio is NOT being recorded', 'Only your microphone is being recorded, so other people on the call may be missing.');
+      showWindow();
+    } else if (!recordingInfo.micAudio && (before.micAudio || info.started)) {
+      notify('Your microphone is NOT being recorded', 'Only the call audio is being recorded, so your own voice will be missing.');
+      showWindow();
+    }
+  });
+
+  // Problems during a recording: devices dropping out, audio not saving.
+  ipcMain.on('recording:fault', (_e, fault) => {
+    if (fault.kind === 'disk' && !fault.recovered) {
+      notify('Sidebar can’t save audio', `${fault.error || 'Saving failed'}. It keeps the audio in memory and keeps trying. Free up disk space if your disk is full.`);
+      showWindow();
+    } else if (fault.kind === 'capture' && fault.recovered) {
+      notify('Recording reconnected', 'An audio device changed or dropped out. Sidebar reconnected and is still recording.');
+    } else if (fault.kind === 'capture') {
+      notify('Recording stopped', `Sidebar lost the audio and couldn't reconnect (${fault.reason}). The audio up to that point is saved.`);
+      showWindow();
+    }
   });
 
   ipcMain.handle('updater:get', () => (updater ? updater.state : { status: 'idle' }));
@@ -449,7 +611,28 @@ function registerIpc() {
 
 // Restarting for an update must never cut off a recording or notes in progress.
 function canRestart() {
-  return !isRecording && processing.size === 0;
+  return !isRecording() && processing.size === 0;
+}
+
+function shortcutLabel() {
+  return process.platform === 'darwin' ? '⌥⇧⌘R' : 'Ctrl+Alt+Shift+R';
+}
+
+function humanDuration(sec) {
+  return sec < 90 ? `${Math.round(sec)} seconds` : `${Math.round(sec / 60)} minutes`;
+}
+
+// A file name that keeps accents and other scripts but is valid on Windows
+// and macOS.
+function safeFileName(title) {
+  let name = String(title)
+    .replace(/[<>:"/\\|?*\u0000-\u001f]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[. ]+$/, '')
+    .slice(0, 120);
+  if (/^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i.test(name)) name = `_${name}`;
+  return name || 'meeting-notes';
 }
 
 app.on('second-instance', showWindow);
@@ -467,6 +650,9 @@ app.whenReady().then(() => {
     beforeInstall: () => {
       isQuitting = true;
     },
+    installFailed: () => {
+      isQuitting = false;
+    },
     canRestart,
   });
   updater.start();
@@ -476,27 +662,49 @@ app.whenReady().then(() => {
   }
 
   app.on('activate', showWindow);
+
+  // After sleep the audio devices may be gone; the recorder notices dead
+  // devices itself, but ask it to check right away.
+  powerMonitor.on('resume', () => {
+    if (isRecording() && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.executeJavaScript('window.sidebarCheckRecording && window.sidebarCheckRecording()').catch(() => {});
+    }
+  });
 });
 
 app.on('before-quit', (event) => {
-  if (isRecording && !isQuitting) {
+  if (isRecording() && !isQuitting) {
+    event.preventDefault();
     const choice = dialog.showMessageBoxSync({
       type: 'warning',
-      buttons: ['Keep recording', 'Quit anyway'],
+      buttons: ['Keep recording', 'Stop and quit'],
       defaultId: 0,
       cancelId: 0,
       message: 'Sidebar is still recording.',
-      detail: 'If you quit now, the audio recorded so far is kept and you can process it next time you open Sidebar.',
+      detail: 'If you quit now, the recording is stopped and saved. You can make its notes next time you open Sidebar.',
     });
-    if (choice === 0) {
-      event.preventDefault();
-      return;
-    }
+    if (choice === 0) return;
+    // Let the recorder save its last few seconds before quitting.
+    isQuitting = true;
+    const done = () => app.quit();
+    const timer = setTimeout(done, 10000);
+    mainWindow.webContents
+      .executeJavaScript('window.sidebarStopForQuit ? window.sidebarStopForQuit() : null')
+      .catch(() => {})
+      .finally(() => {
+        clearTimeout(timer);
+        done();
+      });
+    return;
   }
   isQuitting = true;
 });
 
-app.on('will-quit', () => globalShortcut.unregisterAll());
+app.on('will-quit', () => {
+  globalShortcut.unregisterAll();
+  // Mac: an update staged during a recording goes in now, for next launch.
+  if (updater) updater.applyOnQuit();
+});
 
 // Stay alive in the tray when the window is closed.
 app.on('window-all-closed', () => {});

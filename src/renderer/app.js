@@ -33,8 +33,28 @@ function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 }
 
+// Notes and answers are written by an AI from what people said on the call, so
+// treat them as untrusted: no links (a spoken instruction could plant one that
+// leaks meeting details), no forms or buttons that could pass for app UI, no
+// ids that could shadow the app's own elements. Only read-only checkboxes for
+// task lists survive.
+DOMPurify.addHook('uponSanitizeElement', (node, data) => {
+  if (data.tagName === 'input' && !(node.getAttribute('type') === 'checkbox')) node.remove();
+});
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName === 'INPUT') node.setAttribute('disabled', '');
+});
+
+// IPC errors arrive as "Error invoking remote method 'x': Error: message".
+function cleanError(err) {
+  return String((err && err.message) || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '');
+}
+
 function markdown(text) {
-  return DOMPurify.sanitize(marked.parse(text || '', { gfm: true, breaks: false }));
+  return DOMPurify.sanitize(marked.parse(text || '', { gfm: true, breaks: false }), {
+    FORBID_TAGS: ['a', 'form', 'button', 'dialog', 'textarea', 'select', 'option', 'style', 'img', 'video', 'audio', 'iframe', 'svg', 'math'],
+    FORBID_ATTR: ['style', 'id', 'name', 'class', 'href', 'src', 'action', 'formaction'],
+  });
 }
 
 function clock(seconds) {
@@ -57,7 +77,7 @@ function shortcutLabel() {
 
 function needsKeys() {
   const s = state.settings;
-  return !s.deepgramApiKey || !s.anthropicApiKey;
+  return !s.hasDeepgramKey || !s.hasAnthropicKey;
 }
 
 let toastTimer;
@@ -87,7 +107,7 @@ function renderList() {
   }
   list.innerHTML = items
     .map((m) => `
-      <li class="meeting-item ${m.id === state.selectedId ? 'active' : ''}" data-id="${esc(m.id)}">
+      <li class="meeting-item ${m.id === state.selectedId ? 'active' : ''}" data-id="${esc(m.id)}" tabindex="0" role="button">
         <div class="meeting-title">${esc(m.title)}</div>
         <div class="meeting-meta">
           <span>${esc(shortDate(m.createdAt))}</span>
@@ -100,6 +120,13 @@ function renderList() {
 $('#meetingList').addEventListener('click', (e) => {
   const item = e.target.closest('.meeting-item');
   if (item) openMeeting(item.dataset.id);
+});
+$('#meetingList').addEventListener('keydown', (e) => {
+  const item = e.target.closest('.meeting-item');
+  if (item && (e.key === 'Enter' || e.key === ' ')) {
+    e.preventDefault();
+    openMeeting(item.dataset.id);
+  }
 });
 
 $('#search').addEventListener('input', (e) => {
@@ -171,7 +198,7 @@ function renderStart() {
     state.draft.template = b.dataset.template;
     renderStart();
   });
-  $('#recordBtn').addEventListener('click', () => exclusive(startRecording));
+  $('#recordBtn').addEventListener('click', () => exclusive(() => startRecording()));
   const setup = $('#openSetup');
   if (setup) setup.addEventListener('click', openSettings);
 }
@@ -179,19 +206,30 @@ function renderStart() {
 function renderRecording() {
   const r = state.recorder;
   const paused = r.state === 'paused';
+  const mac = state.settings.platform === 'darwin';
   $('#view').innerHTML = `
     <div class="recording drag-top">
+      ${state.diskError ? `
+        <div class="callout error">
+          <div><strong>Audio isn't being saved.</strong> ${esc(state.diskError)}. Sidebar is holding the audio in memory and keeps retrying. If your disk is full, free up some space now.</div>
+        </div>` : ''}
       ${!r.systemAudio ? `
         <div class="callout warn">
           <div><strong>Only your microphone is being recorded.</strong> Sidebar couldn't capture your computer's audio, so other people on the call may be missed.
-          ${state.settings.platform === 'darwin' ? 'Allow Sidebar under System Settings → Privacy &amp; Security → Screen &amp; System Audio Recording, then quit and reopen Sidebar.' : ''}</div>
-          ${state.settings.platform === 'darwin' ? '<button class="btn ghost" id="openScreenPerm">Open settings</button>' : ''}
+          ${mac ? 'Allow Sidebar under System Settings → Privacy &amp; Security → Screen &amp; System Audio Recording, then quit and reopen Sidebar.' : ''}</div>
+          ${mac ? '<button class="btn ghost" id="openScreenPerm">Open settings</button>' : ''}
         </div>` : ''}
+      ${!r.micAudio ? `
+        <div class="callout warn">
+          <div><strong>Your microphone isn't being recorded.</strong> Only the call audio is captured, so your own voice will be missing. Check that a microphone is connected and that Sidebar is allowed to use it.</div>
+          <button class="btn ghost" id="openMicPerm">Open settings</button>
+        </div>` : ''}
+      ${state.reconnectedAt ? `<p class="hint center">An audio device changed at ${esc(state.reconnectedAt)}; Sidebar reconnected and kept recording.</p>` : ''}
       <div class="rec-indicator ${paused ? 'paused' : ''}"><span class="dot"></span>${paused ? 'Paused' : 'Recording'}</div>
       <div class="timer" id="timer">${clock(r.elapsedSeconds())}</div>
-      <div class="rec-title">${esc(state.draft.title || 'Untitled meeting')}</div>
+      <div class="rec-title">${esc(state.recordingTitle || 'Untitled meeting')}</div>
       <div class="meters">
-        <div class="meter"><span>You</span><div class="bar"><i id="micLevel"></i></div></div>
+        <div class="meter ${r.micAudio ? '' : 'off'}"><span>You</span><div class="bar"><i id="micLevel"></i></div></div>
         <div class="meter ${r.systemAudio ? '' : 'off'}"><span>Call audio</span><div class="bar"><i id="sysLevel"></i></div></div>
       </div>
       <div class="rec-actions">
@@ -210,6 +248,8 @@ function renderRecording() {
   $('#discardBtn').addEventListener('click', () => exclusive(discardRecording));
   const perm = $('#openScreenPerm');
   if (perm) perm.addEventListener('click', () => api.openPermissionSettings('screen'));
+  const micPerm = $('#openMicPerm');
+  if (micPerm) micPerm.addEventListener('click', () => api.openPermissionSettings('microphone'));
 }
 
 function renderMeeting() {
@@ -234,6 +274,9 @@ function renderMeeting() {
           <button class="btn ghost icon" id="deleteBtn" title="Delete">Delete</button>
         </div>
       </header>
+
+      ${meeting.warning ? `
+        <div class="callout warn"><div><strong>Check these notes.</strong> ${esc(meeting.warning)}</div></div>` : ''}
 
       ${meeting.status === 'error' ? `
         <div class="callout error">
@@ -275,10 +318,20 @@ function renderMeeting() {
     toast('Renamed');
   });
   $('#copyBtn').addEventListener('click', async () => {
-    await navigator.clipboard.writeText(await api.meetingText(meeting.id));
-    toast('Notes and transcript copied');
+    try {
+      await navigator.clipboard.writeText(await api.meetingText(meeting.id));
+      toast('Notes and transcript copied');
+    } catch (err) {
+      toast(`Couldn't copy: ${cleanError(err)}`);
+    }
   });
-  $('#exportBtnM').addEventListener('click', () => api.exportMeeting(meeting.id));
+  $('#exportBtnM').addEventListener('click', async () => {
+    try {
+      await api.exportMeeting(meeting.id);
+    } catch (err) {
+      toast(`Couldn't export: ${cleanError(err)}`);
+    }
+  });
   $('#deleteBtn').addEventListener('click', async () => {
     if (await api.deleteMeeting(meeting.id)) {
       state.selectedId = null;
@@ -295,25 +348,23 @@ function renderMeeting() {
 
 function renderNotes(meeting, busy) {
   const body = $('#tabBody');
-  if (!meeting.summary) {
-    body.innerHTML = `<div class="empty-state">${busy ? 'Your notes will appear here.' : 'No notes yet.'}</div>`;
+  const hasTranscript = state.detail && state.detail.transcript.length > 0;
+  const notes = meeting.summary
+    ? `<article class="notes">${markdown(meeting.summary)}</article>`
+    : `<div class="empty-state">${busy ? 'Your notes will appear here.' : 'No notes yet.'}</div>`;
+  if (!meeting.summary && !hasTranscript) {
+    body.innerHTML = notes;
     return;
   }
   body.innerHTML = `
-    <article class="notes">${markdown(meeting.summary)}</article>
+    ${notes}
     <div class="notes-footer">
-      <span class="hint">AI-generated. Check important details against the transcript.</span>
+      <span class="hint">${meeting.summary ? 'AI-generated. Check important details against the transcript.' : ''}</span>
       <div class="row">
-        <select id="templateSwitch">${Object.entries(TEMPLATE_LABELS).map(([k, v]) => `<option value="${k}" ${k === meeting.template ? 'selected' : ''}>${v}</option>`).join('')}</select>
-        <button class="btn ghost" id="regenBtn" ${busy ? 'disabled' : ''}>Regenerate notes</button>
+        <select id="templateSwitch" aria-label="Note style">${Object.entries(TEMPLATE_LABELS).map(([k, v]) => `<option value="${k}" ${k === meeting.template ? 'selected' : ''}>${v}</option>`).join('')}</select>
+        <button class="btn ghost" id="regenBtn" ${busy ? 'disabled' : ''}>${meeting.summary ? 'Regenerate notes' : 'Make notes'}</button>
       </div>
     </div>`;
-  body.querySelectorAll('a[href]').forEach((a) => {
-    a.addEventListener('click', (e) => {
-      e.preventDefault();
-      api.openExternal(a.href);
-    });
-  });
   $('#regenBtn').addEventListener('click', async () => {
     await api.updateMeeting(meeting.id, { template: $('#templateSwitch').value });
     await api.resummarize(meeting.id);
@@ -355,6 +406,7 @@ function renderTranscript(meeting, transcript) {
 function renderAsk(meeting, transcript) {
   const body = $('#tabBody');
   const history = state.askHistory[meeting.id] || [];
+  const typing = $('#askInput') ? $('#askInput').value : '';
   if (!transcript.length) {
     body.innerHTML = '<div class="empty-state">You can ask questions once the transcript is ready.</div>';
     return;
@@ -378,12 +430,13 @@ function renderAsk(meeting, transcript) {
   const ask = async (q) => {
     if (!q.trim()) return;
     const entry = { q, a: '', pending: true };
-    state.askHistory[meeting.id] = [...history, entry];
+    state.askHistory[meeting.id] = [...(state.askHistory[meeting.id] || []), entry];
+    if ($('#askInput')) $('#askInput').value = '';
     renderAsk(meeting, transcript);
     try {
       entry.a = await api.ask(meeting.id, q);
     } catch (err) {
-      entry.a = `**Couldn't answer:** ${String(err.message || err).replace(/^Error invoking remote method '[^']+': (Error: )?/, '')}`;
+      entry.a = `**Couldn't answer:** ${cleanError(err)}`;
     }
     entry.pending = false;
     if (state.selectedId === meeting.id && state.tab === 'ask') renderAsk(meeting, transcript);
@@ -393,6 +446,7 @@ function renderAsk(meeting, transcript) {
     ask($('#askInput').value);
   });
   body.querySelectorAll('[data-q]').forEach((b) => b.addEventListener('click', () => ask(b.dataset.q)));
+  $('#askInput').value = typing;
   $('#askInput').focus();
 }
 
@@ -420,39 +474,47 @@ async function startRecording() {
   }
   if (needsKeys()) {
     toast('Add your API keys first');
-    openSettings();
+    if (!$('#settingsDialog').open) openSettings();
     return;
   }
   const perms = await api.checkPermissions();
-  if (!perms.microphone) {
-    api.showWindow();
-    toast('Sidebar needs microphone access');
-    api.openPermissionSettings('microphone');
-    return;
-  }
+  // Without permission, macOS never hands over the computer's audio and the
+  // request would just hang; go straight to microphone-only and say so.
+  const skipSystemAudio = perms.screen === 'denied' || perms.screen === 'restricted';
 
-  const recorder = new Recorder();
+  // Use what's typed on the start screen only if that's what's showing, so an
+  // old draft never ends up on a different meeting started from the shortcut.
+  const draft = state.selectedId === null ? state.draft : { title: '', template: null, keyterms: '' };
   let meeting;
+  let recorder;
   try {
     meeting = await api.startRecording({
-      title: state.draft.title.trim(),
-      template: state.draft.template || state.settings.defaultTemplate,
-      keyterms: state.draft.keyterms.split(',').map((t) => t.trim()).filter(Boolean),
+      title: draft.title.trim(),
+      template: draft.template || state.settings.defaultTemplate,
+      keyterms: draft.keyterms.split(',').map((t) => t.trim()).filter(Boolean),
     });
     state.recordingId = meeting.id;
-    await recorder.start((buf) => api.sendChunk(meeting.id, buf));
+    recorder = new Recorder({
+      writeChunk: (part, buf) => api.sendChunk(meeting.id, part, buf),
+      onFault: handleRecorderFault,
+      skipSystemAudio,
+    });
+    await recorder.start();
   } catch (err) {
     if (meeting) await api.discardRecording(meeting.id);
     state.recordingId = null;
     api.showWindow();
-    toast(`Couldn't start recording: ${err.message}`);
+    toast(`Couldn't start recording: ${cleanError(err)}`);
     return;
   }
   state.recorder = recorder;
+  state.recordingTitle = meeting.title;
+  state.diskError = null;
+  state.reconnectedAt = null;
   state.selectedId = null;
-  api.setRecordingState(true);
+  state.draft = { title: '', template: null, keyterms: '' };
+  api.recordingInfo({ started: true, systemAudio: recorder.systemAudio, micAudio: recorder.micAudio });
   renderUpdate();
-  if (document.hidden) new Notification('Sidebar is recording', { body: `Press ${shortcutLabel()} to stop.`, silent: true });
   render();
   state.tick = setInterval(() => {
     const t = $('#timer');
@@ -465,23 +527,39 @@ async function startRecording() {
   }, 120);
 }
 
+function handleRecorderFault(fault) {
+  const r = state.recorder;
+  if (fault.error) fault = { ...fault, error: cleanError(fault.error) };
+  api.recordingFault(fault);
+  if (fault.kind === 'disk') {
+    state.diskError = fault.recovered ? null : fault.error || 'Saving failed';
+  } else if (fault.kind === 'capture' && fault.recovered) {
+    state.reconnectedAt = r ? clock(r.elapsedSeconds()) : null;
+    api.recordingInfo({ systemAudio: fault.systemAudio, micAudio: fault.micAudio });
+  } else if (fault.kind === 'capture') {
+    // Couldn't reconnect: save what we have and make notes from it.
+    exclusive(stopRecording);
+    return;
+  }
+  if (state.recorder) renderRecording();
+}
+
 async function finishRecorder() {
   clearInterval(state.tick);
   const id = state.recordingId;
-  const seconds = await state.recorder.stop();
+  const { seconds, unsaved } = await state.recorder.stop();
   state.recorder = null;
   state.recordingId = null;
-  api.setRecordingState(false);
+  state.diskError = null;
   renderUpdate();
-  return { id, seconds };
+  return { id, seconds, unsaved };
 }
 
 async function stopRecording() {
   if (!state.recorder) return;
-  const { id, seconds } = await finishRecorder();
-  await api.stopRecording(id, seconds);
-  state.draft = { title: '', template: null, keyterms: '' };
-  if (document.hidden) new Notification('Recording saved', { body: 'Sidebar is writing your notes.', silent: true });
+  const { id, seconds, unsaved } = await finishRecorder();
+  await api.stopRecording(id, seconds, { unsaved });
+  if (unsaved) toast(`About ${unsaved} seconds of audio couldn't be saved.`);
   await openMeeting(id);
 }
 
@@ -496,6 +574,19 @@ async function discardRecording() {
 
 // Called by the tray menu and the global shortcut.
 window.sidebarToggle = () => exclusive(() => (state.recorder ? stopRecording() : startRecording()));
+
+// Called when the app is quitting mid-recording: save the last seconds.
+window.sidebarStopForQuit = () =>
+  exclusive(async () => {
+    if (!state.recorder) return;
+    const { id, seconds, unsaved } = await finishRecorder();
+    await api.stopRecording(id, seconds, { quitting: true, unsaved });
+  });
+
+// Called after the computer wakes from sleep.
+window.sidebarCheckRecording = () => {
+  if (state.recorder) state.recorder.checkHealth();
+};
 
 // ---------- data ----------
 
@@ -557,8 +648,12 @@ function fillSettingsForm() {
   for (const el of form.elements) {
     if (!el.name) continue;
     if (el.type === 'checkbox') el.checked = Boolean(s[el.name]);
+    else if (el.type === 'password') el.value = ''; // keys are write-only
     else el.value = s[el.name] ?? '';
   }
+  // Saved keys are never sent back to this window; just say they're there.
+  form.elements.deepgramApiKey.placeholder = s.hasDeepgramKey ? 'Saved. Paste a new key to replace it' : 'Paste key';
+  form.elements.anthropicApiKey.placeholder = s.hasAnthropicKey ? 'Saved. Paste a new key to replace it' : 'sk-ant-…';
   $('#encryptionHint').textContent = s.encrypted
     ? 'Keys are stored encrypted on this computer.'
     : 'Keys are stored on this computer.';
@@ -580,6 +675,7 @@ $('#settingsDialog').addEventListener('close', async () => {
   const patch = {};
   for (const el of form.elements) {
     if (!el.name) continue;
+    if (el.type === 'password' && !el.value.trim()) continue; // leave the saved key alone
     patch[el.name] = el.type === 'checkbox' ? el.checked : el.value.trim();
   }
   state.settings = { ...state.settings, ...(await api.saveSettings(patch)) };
@@ -593,6 +689,7 @@ $('#importBtn').addEventListener('click', async () => {
     if (saved) {
       state.settings = { ...state.settings, ...saved };
       fillSettingsForm();
+      render();
       toast('Team setup imported');
     }
   } catch {
@@ -660,6 +757,9 @@ function renderUpdate() {
     html = `<div>Downloading Sidebar ${esc(u.version)}…</div><div class="bar"><i style="width:${Number(u.progress) || 0}%"></i></div>`;
   } else if (u.status === 'installing') {
     html = '<div>Installing the update. Sidebar will reopen in a moment…</div>';
+  } else if (u.status === 'error' && u.version) {
+    html = `<div><strong>Updating to ${esc(u.version)} didn't work.</strong> ${esc(u.error || '')}</div>
+      <button class="btn ghost" id="installUpdateBtn" ${recording ? 'disabled' : ''}>Try again</button>`;
   }
   banner.hidden = !html;
   banner.innerHTML = html;
