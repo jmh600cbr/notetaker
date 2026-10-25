@@ -9,8 +9,10 @@ on:
     tags: ['v*']
   workflow_dispatch:
 
+# Read-only by default. Only the release job (which runs no npm code) can
+# write, so a compromised dependency during `npm ci` can't publish a release.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -21,6 +23,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -32,6 +36,12 @@ jobs:
         run: |
           # An empty CSC_LINK is read as a file path, so drop unset signing secrets.
           extra=""
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            export CSC_LINK="$MAC_CSC_LINK" CSC_KEY_PASSWORD="$MAC_CSC_KEY_PASSWORD"
+          else
+            export CSC_LINK="$WIN_CSC_LINK" CSC_KEY_PASSWORD="$WIN_CSC_KEY_PASSWORD"
+          fi
+          unset MAC_CSC_LINK MAC_CSC_KEY_PASSWORD WIN_CSC_LINK WIN_CSC_KEY_PASSWORD
           if [ -z "$CSC_LINK" ]; then
             unset CSC_LINK CSC_KEY_PASSWORD
             # Without a certificate, sign ad-hoc. A completely unsigned app is
@@ -41,9 +51,12 @@ jobs:
           if [ -z "$APPLE_ID" ]; then unset APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; fi
           npx electron-builder --publish never $extra
         env:
-          # Optional code signing. Leave these secrets unset to build unsigned installers.
-          CSC_LINK: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERTIFICATE_P12_BASE64 || secrets.WIN_CERTIFICATE_PFX_BASE64 }}
-          CSC_KEY_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.MAC_CERTIFICATE_PASSWORD || secrets.WIN_CERTIFICATE_PASSWORD }}
+          # Optional code signing. Leave these secrets unset to build unsigned
+          # installers. Each platform only ever sees its own certificate.
+          MAC_CSC_LINK: ${{ secrets.MAC_CERTIFICATE_P12_BASE64 }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CERTIFICATE_PFX_BASE64 }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
@@ -76,8 +89,12 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     concurrency: release
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Check whether this version is already released
         id: version
         env:
@@ -85,18 +102,23 @@ jobs:
         run: |
           tag="v$(node -p "require('./package.json').version")"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          if gh release view "$tag" > /dev/null 2>&1; then
+          # Published releases only (a draft left by a failed upload gets finished).
+          # Any error other than "not found" stops the job rather than re-publishing.
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" --jq .id > /dev/null 2> err.txt; then
             echo "Release $tag already exists; bump the version in package.json to publish a new one."
             echo "publish=false" >> "$GITHUB_OUTPUT"
-          else
+          elif grep -q "HTTP 404" err.txt; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            cat err.txt
+            exit 1
           fi
       - uses: actions/download-artifact@v4
         if: steps.version.outputs.publish == 'true'
         with:
           path: installers
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         if: steps.version.outputs.publish == 'true'
         with:
           tag_name: ${{ steps.version.outputs.tag }}
