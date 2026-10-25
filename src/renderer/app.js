@@ -731,10 +731,10 @@ function updateStatusText(u) {
     case 'dev': return 'Updates are turned off in development builds.';
     case 'checking': return 'Checking for updates…';
     case 'current': return "You're on the latest version.";
-    case 'available': return `Version ${u.version} is available.`;
+    case 'available': return u.manual ? `Version ${u.version} is available to download.` : `Version ${u.version} is available.`;
     case 'downloading': return `Downloading version ${u.version || ''}… ${u.progress || 0}%`;
     case 'installing': return 'Installing the update…';
-    case 'ready': return `Version ${u.version} is ready. It installs when Sidebar restarts.`;
+    case 'ready': return `Version ${u.version} is ready. Restart Sidebar to finish updating.`;
     case 'error': return u.error || 'Couldn’t check for updates.';
     default: return '';
   }
@@ -749,10 +749,12 @@ function renderUpdate() {
   const banner = $('#updateBanner');
   const recording = Boolean(state.recorder);
   let html = '';
-  if (u.status === 'ready' || u.status === 'available') {
-    const label = u.status === 'ready' ? 'Restart to update' : 'Update now';
-    html = `<div><strong>Sidebar ${esc(u.version)} is here.</strong>${recording ? ' You can update after this recording.' : ''}</div>
-      <button class="btn primary" id="installUpdateBtn" ${recording ? 'disabled' : ''}>${label}</button>`;
+  if (u.status === 'ready') {
+    html = `<div><strong>Sidebar ${esc(u.version)} is ready.</strong> ${recording ? 'You can restart once this recording is done.' : 'Restart to finish updating.'}</div>
+      <button class="btn primary" id="installUpdateBtn" ${recording ? 'disabled' : ''}>Restart to update</button>`;
+  } else if (u.status === 'available' && u.manual) {
+    html = `<div><strong>Sidebar ${esc(u.version)} is available.</strong> Download it and drag it into Applications to update.</div>
+      <button class="btn primary" id="installUpdateBtn">Download update</button>`;
   } else if (u.status === 'downloading' && u.version) {
     html = `<div>Downloading Sidebar ${esc(u.version)}…</div><div class="bar"><i style="width:${Number(u.progress) || 0}%"></i></div>`;
   } else if (u.status === 'installing') {
