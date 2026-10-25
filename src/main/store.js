@@ -47,7 +47,9 @@ class Store {
         try {
           settings[key] = this.safeStorage.decryptString(Buffer.from(enc, 'base64'));
         } catch {
+          // e.g. keychain access denied after an update; tell the user why.
           settings[key] = '';
+          settings.keysLocked = true;
         }
       }
       delete settings[`${key}Enc`];

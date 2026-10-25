@@ -37,6 +37,11 @@ contextBridge.exposeInMainWorld('sidebar', {
   discardRecording: (id) => invoke('recording:discard', id),
   setRecordingState: (recording) => ipcRenderer.send('recording:state', recording),
 
+  getUpdate: () => invoke('updater:get'),
+  checkForUpdates: () => invoke('updater:check'),
+  installUpdate: () => invoke('updater:install'),
+  onUpdateState: (cb) => on('updater:state', cb),
+
   openExternal: (url) => invoke('shell:openExternal', url),
   showWindow: () => ipcRenderer.send('window:show'),
 

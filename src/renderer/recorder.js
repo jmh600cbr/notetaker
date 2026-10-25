@@ -67,7 +67,23 @@ class Recorder {
     await window.sidebar.enableLoopbackAudio();
     let stream;
     try {
-      stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      // If the OS gives the loopback handler no source (e.g. macOS permission
+      // missing), getDisplayMedia never settles. Give up after a while and
+      // record the microphone only, rather than hanging.
+      const request = navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      let timer;
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Timed out waiting for computer audio.')), 20000);
+      });
+      try {
+        stream = await Promise.race([request, timeout]);
+      } catch (err) {
+        // Release the stream if it arrives after we gave up.
+        request.then((late) => late.getTracks().forEach((t) => t.stop())).catch(() => {});
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
     } finally {
       await window.sidebar.disableLoopbackAudio();
     }

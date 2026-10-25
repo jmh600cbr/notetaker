@@ -1,8 +1,8 @@
 name: Build installers
 
-# Every push builds the Mac and Windows installers. When package.json has a
-# version that hasn't been released yet, they're published as release
-# v<version>, so bumping the version is all it takes to ship.
+# Every push builds the Mac and Windows installers. When main has a
+# package.json version that hasn't been released yet, they're published as
+# release v<version>, so bumping the version is all it takes to ship.
 on:
   push:
     branches: [main, 'claude/**']
@@ -47,6 +47,10 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - name: Check the Windows update manifest was built
+        if: runner.os == 'Windows'
+        shell: bash
+        run: test -f dist/latest.yml && cat dist/latest.yml
       - name: Verify the Mac app's signature
         if: runner.os == 'macOS'
         run: |
@@ -57,14 +61,21 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: sidebar-${{ runner.os }}
+          # latest.yml and the .blockmap files let installed copies update themselves.
           path: |
             dist/*.dmg
             dist/*.exe
+            dist/*.blockmap
+            dist/latest*.yml
           if-no-files-found: error
 
   release:
+    # Installed copies auto-update from the latest release, so only ever
+    # publish what has been merged into main.
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
+    concurrency: release
     steps:
       - uses: actions/checkout@v4
       - name: Check whether this version is already released

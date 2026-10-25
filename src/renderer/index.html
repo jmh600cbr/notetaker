@@ -22,6 +22,7 @@
         <button id="newBtn" class="btn primary block"><span class="dot"></span> New recording</button>
         <input id="search" class="search" type="search" placeholder="Search notes" />
         <ul id="meetingList" class="meeting-list"></ul>
+        <div id="updateBanner" class="update-banner" hidden></div>
         <button id="settingsBtn" class="btn ghost block">Settings</button>
       </aside>
       <main id="view" class="view"></main>
@@ -86,9 +87,18 @@
           </label>
         </section>
 
-        <div class="dialog-actions">
-          <button value="cancel" class="btn ghost">Cancel</button>
+        <section>
+          <h3>About</h3>
+          <div class="row about-row">
+            <span>Sidebar <span id="appVersion"></span></span>
+            <button type="button" id="checkUpdatesBtn" class="btn ghost small">Check for updates</button>
+          </div>
+          <p class="hint" id="updateStatus"></p>
+        </section>
+
+        <div class="dialog-actions reverse">
           <button value="save" class="btn primary" id="saveSettings">Save</button>
+          <button type="button" class="btn ghost" id="cancelSettings">Cancel</button>
         </div>
       </form>
     </dialog>

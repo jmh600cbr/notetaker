@@ -23,7 +23,7 @@ When you stop recording, Sidebar:
 ## Using it
 
 1. Join your Zoom / Teams / Meet call as usual.
-2. Click **Start recording**, or press **⌘⇧R** on Mac or **Ctrl+Shift+R** on Windows from anywhere. You can close the window; Sidebar keeps recording in the menu bar or tray.
+2. Click **Start recording**, or press **⌥⇧⌘R** (Option+Shift+Command+R) on Mac or **Ctrl+Alt+Shift+R** on Windows from anywhere. You can close the window; Sidebar keeps recording in the menu bar or tray.
 3. Press the shortcut again, or click **Stop & make notes**. You'll get a notification when the notes are ready, usually within a minute or two.
 
 Tips:
@@ -95,14 +95,20 @@ npm run dist:win   # build .exe (on Windows)
 
 ### Releasing
 
-Every push builds both installers in GitHub Actions. To publish a new release, bump the version and push:
+Every push builds both installers in GitHub Actions. To publish a new release, bump the version and merge it into `main`:
 
 ```bash
-npm version patch --no-git-tag-version   # e.g. 0.1.0 -> 0.1.1
-git commit -am "Release 0.1.1" && git push
+npm version patch --no-git-tag-version   # e.g. 0.1.2 -> 0.1.3
 ```
 
-The workflow publishes the installers as release `v0.1.1`. Pushes that don't change the version just build, and the installers can be downloaded from the workflow run's artifacts.
+When that reaches `main`, the workflow publishes the installers as release `v0.1.3`. Pushes that don't change the version just build; their installers can be downloaded from the workflow run's artifacts.
+
+### Updates
+
+Installed copies check for a new release on launch and every few hours, then show an **Update** button in the sidebar. Updates never restart Sidebar during a recording or while notes are being made.
+
+- **Windows:** the update downloads in the background and installs on restart.
+- **Mac:** Sidebar downloads the new version, checks it against GitHub's published SHA-256 and its code signature, replaces itself in Applications and reopens. Because these builds aren't Developer ID signed yet, macOS may ask for microphone and screen-and-audio access again after an update.
 
 ### Code signing (recommended before sharing widely)
 

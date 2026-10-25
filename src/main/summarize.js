@@ -121,7 +121,7 @@ async function askClaude({ apiKey, meeting, segments, instructions, effort, form
     const message = await client.beta.messages
       .stream({
         model: MODEL,
-        max_tokens: 16000,
+        max_tokens: 64000,
         betas: ['server-side-fallback-2026-07-01'],
         fallbacks: 'default',
         output_config: format ? { effort, format } : { effort },

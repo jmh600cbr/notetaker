@@ -52,7 +52,7 @@ function shortDate(iso) {
 }
 
 function shortcutLabel() {
-  return state.settings && state.settings.platform === 'darwin' ? '⌘⇧R' : 'Ctrl+Shift+R';
+  return state.settings && state.settings.platform === 'darwin' ? '⌥⇧⌘R' : 'Ctrl+Alt+Shift+R';
 }
 
 function needsKeys() {
@@ -129,7 +129,9 @@ function renderStart() {
     <div class="start drag-top">
       ${needsKeys() ? `
         <div class="callout">
-          <div><strong>Finish setup.</strong> Add your transcription and summary keys (or import your team's setup file) to start taking notes.</div>
+          <div>${s.keysLocked
+            ? "<strong>Sidebar couldn't unlock your saved keys.</strong> This can happen after an update if macOS asked for keychain access and it wasn't allowed. Re-enter your keys or import your team's setup file."
+            : "<strong>Finish setup.</strong> Add your transcription and summary keys (or import your team's setup file) to start taking notes."}</div>
           <button class="btn primary" id="openSetup">Open settings</button>
         </div>` : ''}
       <h1>Ready when you are.</h1>
@@ -148,7 +150,7 @@ function renderStart() {
         </div>
         <label class="field">
           <span>Names &amp; terms to listen for <small>(optional, comma separated)</small></span>
-          <input id="keytermsInput" placeholder="e.g. Justice Okafor, Harris Partners, Rule 20 motion" value="${esc(state.draft.keyterms)}" />
+          <input id="keytermsInput" placeholder="e.g. Justice Okafor, Acme Holdings, Rule 20 motion" value="${esc(state.draft.keyterms)}" />
         </label>
         <button class="btn record" id="recordBtn"><span class="dot"></span> Start recording</button>
         <p class="hint center">Tip: press <kbd>${shortcutLabel()}</kbd> anywhere to start or stop, even with Sidebar hidden.</p>
@@ -169,7 +171,7 @@ function renderStart() {
     state.draft.template = b.dataset.template;
     renderStart();
   });
-  $('#recordBtn').addEventListener('click', startRecording);
+  $('#recordBtn').addEventListener('click', () => exclusive(startRecording));
   const setup = $('#openSetup');
   if (setup) setup.addEventListener('click', openSettings);
 }
@@ -204,8 +206,8 @@ function renderRecording() {
     else r.pause();
     renderRecording();
   });
-  $('#stopBtn').addEventListener('click', stopRecording);
-  $('#discardBtn').addEventListener('click', discardRecording);
+  $('#stopBtn').addEventListener('click', () => exclusive(stopRecording));
+  $('#discardBtn').addEventListener('click', () => exclusive(discardRecording));
   const perm = $('#openScreenPerm');
   if (perm) perm.addEventListener('click', () => api.openPermissionSettings('screen'));
 }
@@ -396,6 +398,18 @@ function renderAsk(meeting, transcript) {
 
 // ---------- recording ----------
 
+// Start and stop each take a few seconds (permission prompts, flushing audio).
+// Ignore extra presses of the shortcut until the current one has finished,
+// so a double press can never leave a second recorder running.
+let transition = null;
+function exclusive(fn) {
+  if (transition) return transition;
+  transition = fn().finally(() => {
+    transition = null;
+  });
+  return transition;
+}
+
 async function startRecording() {
   if (state.recorder) return;
   // Started from the shortcut with setup unfinished: bring the window up.
@@ -437,6 +451,7 @@ async function startRecording() {
   state.recorder = recorder;
   state.selectedId = null;
   api.setRecordingState(true);
+  renderUpdate();
   if (document.hidden) new Notification('Sidebar is recording', { body: `Press ${shortcutLabel()} to stop.`, silent: true });
   render();
   state.tick = setInterval(() => {
@@ -452,11 +467,12 @@ async function startRecording() {
 
 async function finishRecorder() {
   clearInterval(state.tick);
-  const seconds = await state.recorder.stop();
   const id = state.recordingId;
+  const seconds = await state.recorder.stop();
   state.recorder = null;
   state.recordingId = null;
   api.setRecordingState(false);
+  renderUpdate();
   return { id, seconds };
 }
 
@@ -479,7 +495,7 @@ async function discardRecording() {
 }
 
 // Called by the tray menu and the global shortcut.
-window.sidebarToggle = () => (state.recorder ? stopRecording() : startRecording());
+window.sidebarToggle = () => exclusive(() => (state.recorder ? stopRecording() : startRecording()));
 
 // ---------- data ----------
 
@@ -497,16 +513,38 @@ async function openMeeting(id) {
   render();
 }
 
+// Re-render the meeting view while keeping whatever the user is typing
+// (title, a question, a speaker name) and where they were scrolled.
+function rerenderMeeting() {
+  const active = document.activeElement;
+  let restore = null;
+  if (active && active.tagName === 'INPUT' && $('#view').contains(active)) {
+    const selector = active.id ? `#${active.id}` : active.dataset.key ? `input[data-key="${CSS.escape(active.dataset.key)}"]` : null;
+    if (selector) restore = { selector, value: active.value, start: active.selectionStart, end: active.selectionEnd };
+  }
+  const scrollTop = $('#tabBody') ? $('#tabBody').scrollTop : 0;
+  renderMeeting();
+  if ($('#tabBody')) $('#tabBody').scrollTop = scrollTop;
+  const el = restore && $(restore.selector);
+  if (el) {
+    el.value = restore.value;
+    el.focus();
+    try {
+      el.setSelectionRange(restore.start, restore.end);
+    } catch {
+      // not a text input
+    }
+  }
+}
+
 api.onMeetingUpdated(async (meeting) => {
   await refreshMeetings();
-  if (meeting.id === state.selectedId && !state.recorder) {
-    const scrollTop = $('#tabBody') ? $('#tabBody').scrollTop : 0;
-    state.detail = await api.getMeeting(meeting.id);
-    // Don't clobber the title while the user is editing it.
-    if (document.activeElement && document.activeElement.id === 'titleEdit') return;
-    renderMeeting();
-    if ($('#tabBody')) $('#tabBody').scrollTop = scrollTop;
-  }
+  if (meeting.id !== state.selectedId || state.recorder) return;
+  const detail = await api.getMeeting(meeting.id);
+  // The user may have moved on while we were loading.
+  if (meeting.id !== state.selectedId || state.recorder) return;
+  state.detail = detail;
+  rerenderMeeting();
 });
 
 api.onOpenMeeting((id) => openMeeting(id));
@@ -528,10 +566,13 @@ function fillSettingsForm() {
 
 function openSettings() {
   fillSettingsForm();
-  $('#settingsDialog').showModal();
+  const dialog = $('#settingsDialog');
+  dialog.returnValue = '';
+  dialog.showModal();
 }
 
 $('#settingsBtn').addEventListener('click', openSettings);
+$('#cancelSettings').addEventListener('click', () => $('#settingsDialog').close('cancel'));
 
 $('#settingsDialog').addEventListener('close', async () => {
   if ($('#settingsDialog').returnValue !== 'save') return;
@@ -586,10 +627,67 @@ function showNotice() {
   });
 }
 
+// ---------- updates ----------
+
+function updateStatusText(u) {
+  switch (u.status) {
+    case 'dev': return 'Updates are turned off in development builds.';
+    case 'checking': return 'Checking for updates…';
+    case 'current': return "You're on the latest version.";
+    case 'available': return `Version ${u.version} is available.`;
+    case 'downloading': return `Downloading version ${u.version || ''}… ${u.progress || 0}%`;
+    case 'installing': return 'Installing the update…';
+    case 'ready': return `Version ${u.version} is ready. It installs when Sidebar restarts.`;
+    case 'error': return u.error || 'Couldn’t check for updates.';
+    default: return '';
+  }
+}
+
+function renderUpdate() {
+  const u = state.update || {};
+  $('#appVersion').textContent = u.current ? `v${u.current}` : '';
+  $('#updateStatus').textContent = updateStatusText(u);
+  $('#checkUpdatesBtn').disabled = ['checking', 'downloading', 'installing', 'dev'].includes(u.status);
+
+  const banner = $('#updateBanner');
+  const recording = Boolean(state.recorder);
+  let html = '';
+  if (u.status === 'ready' || u.status === 'available') {
+    const label = u.status === 'ready' ? 'Restart to update' : 'Update now';
+    html = `<div><strong>Sidebar ${esc(u.version)} is here.</strong>${recording ? ' You can update after this recording.' : ''}</div>
+      <button class="btn primary" id="installUpdateBtn" ${recording ? 'disabled' : ''}>${label}</button>`;
+  } else if (u.status === 'downloading' && u.version) {
+    html = `<div>Downloading Sidebar ${esc(u.version)}…</div><div class="bar"><i style="width:${Number(u.progress) || 0}%"></i></div>`;
+  } else if (u.status === 'installing') {
+    html = '<div>Installing the update. Sidebar will reopen in a moment…</div>';
+  }
+  banner.hidden = !html;
+  banner.innerHTML = html;
+  const btn = $('#installUpdateBtn');
+  if (btn) {
+    btn.addEventListener('click', async () => {
+      const result = await api.installUpdate();
+      if (result && !result.ok && result.reason) toast(result.reason);
+    });
+  }
+}
+
+api.onUpdateState((u) => {
+  state.update = u;
+  renderUpdate();
+});
+
+$('#checkUpdatesBtn').addEventListener('click', async () => {
+  state.update = await api.checkForUpdates();
+  renderUpdate();
+});
+
 // ---------- boot ----------
 
 (async function init() {
   state.settings = await api.getSettings();
+  state.update = await api.getUpdate();
+  renderUpdate();
   document.body.classList.add(`platform-${state.settings.platform}`);
   await refreshMeetings();
   render();
