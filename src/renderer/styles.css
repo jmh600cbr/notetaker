@@ -195,6 +195,7 @@ h1 { font-size: 30px; margin: 12px 0 6px; letter-spacing: -0.4px; }
 .toggle input { margin-top: 3px; accent-color: var(--accent); }
 .toggle small { display: block; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }
+.dialog-actions.reverse { flex-direction: row-reverse; justify-content: flex-start; }
 .notice-list { padding-left: 18px; line-height: 1.5; }
 .notice-list li { margin-bottom: 8px; }
 

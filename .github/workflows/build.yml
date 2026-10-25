@@ -1,8 +1,8 @@
 name: Build installers
 
-# Every push builds the Mac and Windows installers. When package.json has a
-# version that hasn't been released yet, they're published as release
-# v<version>, so bumping the version is all it takes to ship.
+# Every push builds the Mac and Windows installers. When main has a
+# package.json version that hasn't been released yet, they're published as
+# release v<version>, so bumping the version is all it takes to ship.
 on:
   push:
     branches: [main, 'claude/**']
@@ -70,8 +70,12 @@ jobs:
           if-no-files-found: error
 
   release:
+    # Installed copies auto-update from the latest release, so only ever
+    # publish what has been merged into main.
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
+    concurrency: release
     steps:
       - uses: actions/checkout@v4
       - name: Check whether this version is already released

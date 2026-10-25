@@ -30,9 +30,10 @@ function currentBundlePath() {
 }
 
 class Updater {
-  constructor({ onState, beforeInstall }) {
+  constructor({ onState, beforeInstall, canRestart }) {
     this.onState = onState;
     this.beforeInstall = beforeInstall;
+    this.canRestart = canRestart;
     this.state = { status: 'idle', current: app.getVersion() };
     this.busy = false;
   }
@@ -173,6 +174,14 @@ class Updater {
     await fs.promises.rm(old, { recursive: true, force: true });
     await fs.promises.rm(dir, { recursive: true, force: true });
 
+    // The new version is in place. If a recording started meanwhile, it runs
+    // next time Sidebar opens (or when the user clicks "Restart to update").
+    this.installedMac = true;
+    if (this.canRestart()) this.relaunch();
+    else this.set({ status: 'ready' });
+  }
+
+  relaunch() {
     this.beforeInstall();
     app.relaunch();
     app.exit(0);
@@ -185,6 +194,10 @@ class Updater {
     if (process.platform === 'win32' && this.state.status === 'ready') {
       this.beforeInstall();
       this.win.quitAndInstall(false, true);
+      return;
+    }
+    if (process.platform === 'darwin' && this.state.status === 'ready' && this.installedMac) {
+      this.relaunch();
       return;
     }
     if (process.platform === 'darwin' && this.state.status === 'available') {

@@ -52,7 +52,7 @@ function shortDate(iso) {
 }
 
 function shortcutLabel() {
-  return state.settings && state.settings.platform === 'darwin' ? '⌘⇧R' : 'Ctrl+Shift+R';
+  return state.settings && state.settings.platform === 'darwin' ? '⌥⇧⌘R' : 'Ctrl+Alt+Shift+R';
 }
 
 function needsKeys() {
@@ -129,7 +129,9 @@ function renderStart() {
     <div class="start drag-top">
       ${needsKeys() ? `
         <div class="callout">
-          <div><strong>Finish setup.</strong> Add your transcription and summary keys (or import your team's setup file) to start taking notes.</div>
+          <div>${s.keysLocked
+            ? "<strong>Sidebar couldn't unlock your saved keys.</strong> This can happen after an update if macOS asked for keychain access and it wasn't allowed. Re-enter your keys or import your team's setup file."
+            : "<strong>Finish setup.</strong> Add your transcription and summary keys (or import your team's setup file) to start taking notes."}</div>
           <button class="btn primary" id="openSetup">Open settings</button>
         </div>` : ''}
       <h1>Ready when you are.</h1>
@@ -169,7 +171,7 @@ function renderStart() {
     state.draft.template = b.dataset.template;
     renderStart();
   });
-  $('#recordBtn').addEventListener('click', startRecording);
+  $('#recordBtn').addEventListener('click', () => exclusive(startRecording));
   const setup = $('#openSetup');
   if (setup) setup.addEventListener('click', openSettings);
 }
@@ -204,8 +206,8 @@ function renderRecording() {
     else r.pause();
     renderRecording();
   });
-  $('#stopBtn').addEventListener('click', stopRecording);
-  $('#discardBtn').addEventListener('click', discardRecording);
+  $('#stopBtn').addEventListener('click', () => exclusive(stopRecording));
+  $('#discardBtn').addEventListener('click', () => exclusive(discardRecording));
   const perm = $('#openScreenPerm');
   if (perm) perm.addEventListener('click', () => api.openPermissionSettings('screen'));
 }
@@ -396,6 +398,18 @@ function renderAsk(meeting, transcript) {
 
 // ---------- recording ----------
 
+// Start and stop each take a few seconds (permission prompts, flushing audio).
+// Ignore extra presses of the shortcut until the current one has finished,
+// so a double press can never leave a second recorder running.
+let transition = null;
+function exclusive(fn) {
+  if (transition) return transition;
+  transition = fn().finally(() => {
+    transition = null;
+  });
+  return transition;
+}
+
 async function startRecording() {
   if (state.recorder) return;
   // Started from the shortcut with setup unfinished: bring the window up.
@@ -453,8 +467,8 @@ async function startRecording() {
 
 async function finishRecorder() {
   clearInterval(state.tick);
-  const seconds = await state.recorder.stop();
   const id = state.recordingId;
+  const seconds = await state.recorder.stop();
   state.recorder = null;
   state.recordingId = null;
   api.setRecordingState(false);
@@ -481,7 +495,7 @@ async function discardRecording() {
 }
 
 // Called by the tray menu and the global shortcut.
-window.sidebarToggle = () => (state.recorder ? stopRecording() : startRecording());
+window.sidebarToggle = () => exclusive(() => (state.recorder ? stopRecording() : startRecording()));
 
 // ---------- data ----------
 
@@ -499,16 +513,38 @@ async function openMeeting(id) {
   render();
 }
 
+// Re-render the meeting view while keeping whatever the user is typing
+// (title, a question, a speaker name) and where they were scrolled.
+function rerenderMeeting() {
+  const active = document.activeElement;
+  let restore = null;
+  if (active && active.tagName === 'INPUT' && $('#view').contains(active)) {
+    const selector = active.id ? `#${active.id}` : active.dataset.key ? `input[data-key="${CSS.escape(active.dataset.key)}"]` : null;
+    if (selector) restore = { selector, value: active.value, start: active.selectionStart, end: active.selectionEnd };
+  }
+  const scrollTop = $('#tabBody') ? $('#tabBody').scrollTop : 0;
+  renderMeeting();
+  if ($('#tabBody')) $('#tabBody').scrollTop = scrollTop;
+  const el = restore && $(restore.selector);
+  if (el) {
+    el.value = restore.value;
+    el.focus();
+    try {
+      el.setSelectionRange(restore.start, restore.end);
+    } catch {
+      // not a text input
+    }
+  }
+}
+
 api.onMeetingUpdated(async (meeting) => {
   await refreshMeetings();
-  if (meeting.id === state.selectedId && !state.recorder) {
-    const scrollTop = $('#tabBody') ? $('#tabBody').scrollTop : 0;
-    state.detail = await api.getMeeting(meeting.id);
-    // Don't clobber the title while the user is editing it.
-    if (document.activeElement && document.activeElement.id === 'titleEdit') return;
-    renderMeeting();
-    if ($('#tabBody')) $('#tabBody').scrollTop = scrollTop;
-  }
+  if (meeting.id !== state.selectedId || state.recorder) return;
+  const detail = await api.getMeeting(meeting.id);
+  // The user may have moved on while we were loading.
+  if (meeting.id !== state.selectedId || state.recorder) return;
+  state.detail = detail;
+  rerenderMeeting();
 });
 
 api.onOpenMeeting((id) => openMeeting(id));
@@ -530,10 +566,13 @@ function fillSettingsForm() {
 
 function openSettings() {
   fillSettingsForm();
-  $('#settingsDialog').showModal();
+  const dialog = $('#settingsDialog');
+  dialog.returnValue = '';
+  dialog.showModal();
 }
 
 $('#settingsBtn').addEventListener('click', openSettings);
+$('#cancelSettings').addEventListener('click', () => $('#settingsDialog').close('cancel'));
 
 $('#settingsDialog').addEventListener('close', async () => {
   if ($('#settingsDialog').returnValue !== 'save') return;
@@ -625,7 +664,12 @@ function renderUpdate() {
   banner.hidden = !html;
   banner.innerHTML = html;
   const btn = $('#installUpdateBtn');
-  if (btn) btn.addEventListener('click', () => api.installUpdate());
+  if (btn) {
+    btn.addEventListener('click', async () => {
+      const result = await api.installUpdate();
+      if (result && !result.ok && result.reason) toast(result.reason);
+    });
+  }
 }
 
 api.onUpdateState((u) => {

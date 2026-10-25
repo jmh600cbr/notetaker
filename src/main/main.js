@@ -24,7 +24,9 @@ const { Updater } = require('./updater');
 // output (what you hear from Zoom/Teams/Meet) without a virtual audio driver.
 initAudioLoopback();
 
-const SHORTCUT = 'CommandOrControl+Shift+R';
+// Ctrl/Cmd+Shift+R alone is the browsers' hard-reload, so add Alt/Option.
+const SHORTCUT = 'CommandOrControl+Alt+Shift+R';
+const APP_ID = 'io.github.jmh600cbr.sidebar';
 const ASSETS = path.join(__dirname, '..', '..', 'assets');
 
 let mainWindow = null;
@@ -34,9 +36,12 @@ let isRecording = false;
 let isQuitting = false;
 let updater = null;
 
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
-}
+// A second launch (e.g. clicking the desktop shortcut while Sidebar sits in
+// the tray) must exit before doing anything, or it would mark the running
+// instance's recording as interrupted.
+const isPrimaryInstance = app.requestSingleInstanceLock();
+if (!isPrimaryInstance) app.exit(0);
+if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
 
 function showWindow() {
   if (!mainWindow) createWindow();
@@ -81,7 +86,10 @@ function createWindow() {
   mainWindow.removeMenu();
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
   mainWindow.once('ready-to-show', () => {
-    if (!process.argv.includes('--hidden')) mainWindow.show();
+    const openedAtLogin =
+      process.argv.includes('--hidden') ||
+      (process.platform === 'darwin' && app.getLoginItemSettings().wasOpenedAtLogin);
+    if (!openedAtLogin) mainWindow.show();
   });
 
   // Closing the window keeps Sidebar running in the tray / menu bar.
@@ -134,13 +142,20 @@ function createTray() {
   refreshTray();
 }
 
+// Keep notifications referenced until they're dismissed, otherwise their
+// click handlers can be garbage-collected.
+const liveNotifications = new Set();
+
 function notify(title, body, meetingId) {
   if (!Notification.isSupported()) return;
   const n = new Notification({ title, body, silent: false });
+  liveNotifications.add(n);
   n.on('click', () => {
+    liveNotifications.delete(n);
     showWindow();
     if (meetingId) send('meetings:open', meetingId);
   });
+  n.on('close', () => liveNotifications.delete(n));
   n.show();
 }
 
@@ -183,13 +198,21 @@ async function processMeeting(id) {
       broadcastMeeting(store.updateMeeting(id, { status: 'identifying' }));
       try {
         const names = await identifySpeakers({ apiKey: settings.anthropicApiKey, meeting, segments });
-        meeting = store.updateMeeting(id, { speakers: { ...meeting.speakers, ...names } });
+        // The user may have renamed speakers while we waited; their names win.
+        const current = store.getMeeting(id).speakers || {};
+        const speakers = { ...current };
+        for (const [key, name] of Object.entries(names)) {
+          if (current[key] === result.speakers[key]) speakers[key] = name;
+        }
+        store.updateMeeting(id, { speakers });
       } catch (err) {
         console.warn('Speaker identification failed:', err.message);
       }
     }
 
     broadcastMeeting(store.updateMeeting(id, { status: 'summarizing', error: null }));
+    // Re-read so speaker names and note style edited during processing are used.
+    meeting = store.getMeeting(id);
     const summary = await summarize({ apiKey: settings.anthropicApiKey, meeting, segments });
     meeting = store.updateMeeting(id, { summary, status: 'ready', error: null });
 
@@ -197,8 +220,12 @@ async function processMeeting(id) {
     broadcastMeeting(meeting);
     notify('Your notes are ready', meeting.title, id);
   } catch (err) {
-    broadcastMeeting(store.updateMeeting(id, { status: 'error', error: err.message }));
-    notify('Sidebar couldn’t finish your notes', err.message, id);
+    try {
+      broadcastMeeting(store.updateMeeting(id, { status: 'error', error: err.message }));
+      notify('Sidebar couldn’t finish your notes', err.message, id);
+    } catch {
+      // The meeting was deleted while processing.
+    }
   } finally {
     processing.delete(id);
   }
@@ -308,6 +335,14 @@ function registerIpc() {
   });
 
   ipcMain.handle('meetings:delete', async (_e, id) => {
+    if (processing.has(id)) {
+      await dialog.showMessageBox(mainWindow, {
+        type: 'info',
+        message: 'This meeting is still being processed.',
+        detail: 'You can delete it once the notes are ready or processing stops.',
+      });
+      return false;
+    }
     const { response } = await dialog.showMessageBox(mainWindow, {
       type: 'warning',
       buttons: ['Delete', 'Cancel'],
@@ -396,10 +431,13 @@ function registerIpc() {
   ipcMain.handle('updater:get', () => (updater ? updater.state : { status: 'idle' }));
   ipcMain.handle('updater:check', () => (updater ? updater.check(true) : { status: 'idle' }));
   ipcMain.handle('updater:install', () => {
-    // Never restart in the middle of a recording.
-    if (isRecording || !updater) return false;
+    if (!updater) return { ok: false };
+    // Downloading is fine any time; only the restart has to wait.
+    if (updater.state.status === 'ready' && !canRestart()) {
+      return { ok: false, reason: 'You can restart to update once your recording and notes are finished.' };
+    }
     updater.install();
-    return true;
+    return { ok: true };
   });
 
   ipcMain.handle('shell:openExternal', (_e, url) => {
@@ -409,9 +447,15 @@ function registerIpc() {
 
 // ---- app lifecycle ----
 
+// Restarting for an update must never cut off a recording or notes in progress.
+function canRestart() {
+  return !isRecording && processing.size === 0;
+}
+
 app.on('second-instance', showWindow);
 
 app.whenReady().then(() => {
+  if (!isPrimaryInstance) return;
   store = new Store(app.getPath('userData'), safeStorage);
   store.recoverInterrupted();
   registerIpc();
@@ -423,6 +467,7 @@ app.whenReady().then(() => {
     beforeInstall: () => {
       isQuitting = true;
     },
+    canRestart,
   });
   updater.start();
 
