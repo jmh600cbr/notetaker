@@ -63,7 +63,10 @@ jobs:
       - name: Check the Windows update manifest was built
         if: runner.os == 'Windows'
         shell: bash
-        run: test -f dist/latest.yml && cat dist/latest.yml
+        run: |
+          test -f dist/latest.yml && cat dist/latest.yml
+          # The installed app reads this to know where to look for updates.
+          test -f dist/win-unpacked/resources/app-update.yml && cat dist/win-unpacked/resources/app-update.yml
       - name: Verify the Mac app's signature
         if: runner.os == 'macOS'
         run: |
