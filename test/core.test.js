@@ -147,3 +147,27 @@ test('Claude gets the local meeting date, not the UTC date', () => {
   assert.match(text, /date="Saturday, October 24, 2026"/);
   assert.match(text, /title="A &quot;quoted&quot; &lt;title&gt;"/);
 });
+
+test('cost estimates', () => {
+  const { claudeCost, deepgramCost } = require('../src/main/pricing');
+  // 1M input + 100k output tokens on Opus 5.5 = $4 + $2
+  assert.equal(claudeCost({ input_tokens: 1e6, output_tokens: 1e5 }).toFixed(2), '6.00');
+  // fallback attempts are each counted
+  assert.equal(claudeCost({ input_tokens: 9, iterations: [{ input_tokens: 1e6 }, { input_tokens: 1e6 }] }).toFixed(2), '8.00');
+  // one hour of stereo audio = 120 channel-minutes
+  assert.equal(deepgramCost(3600 * 2, 0.0063).toFixed(3), '0.756');
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sidebar-'));
+  const store = new Store(dir, null);
+  const m = store.createMeeting({ title: 'Costs' });
+  store.addCost(m.id, { transcription: 0.5 });
+  store.addCost(m.id, { ai: 0.25 });
+  store.addCost(m.id, { ai: 0.25 });
+  assert.deepEqual(store.getMeeting(m.id).cost, { transcription: 0.5, ai: 0.5 });
+  const summary = store.getCostSummary();
+  assert.equal(summary.thisMonth.ai, 0.5);
+  assert.equal(summary.allTime.transcription, 0.5);
+  assert.equal(store.saveSettings({ deepgramPerMinute: '0.0043' }).deepgramPerMinute, 0.0043);
+  assert.equal(store.saveSettings({ deepgramPerMinute: 'abc' }).deepgramPerMinute, 0.0043);
+  fs.rmSync(dir, { recursive: true, force: true });
+});

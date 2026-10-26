@@ -57,6 +57,15 @@ function markdown(text) {
   });
 }
 
+function money(n) {
+  if (!n) return '$0.00';
+  return n < 0.01 ? '<$0.01' : `$${n.toFixed(2)}`;
+}
+
+function meetingCost(m) {
+  return m.cost ? (m.cost.transcription || 0) + (m.cost.ai || 0) : 0;
+}
+
 function clock(seconds) {
   const s = Math.max(0, Math.floor(seconds));
   const h = Math.floor(s / 3600);
@@ -265,6 +274,7 @@ function renderMeeting() {
             ${esc(new Date(meeting.createdAt).toLocaleString())}
             · ${Math.max(1, Math.round((meeting.durationSec || 0) / 60))} min
             · ${esc(TEMPLATE_LABELS[meeting.template] || 'Meeting')}
+            ${meetingCost(meeting) ? `· <span title="Estimated: transcription ${esc(money(meeting.cost.transcription))}, AI notes &amp; questions ${esc(money(meeting.cost.ai))}">≈ ${esc(money(meetingCost(meeting)))}</span>` : ''}
             ${meeting.status !== 'ready' ? `<span class="chip ${esc(meeting.status)}">${esc(STATUS_LABELS[meeting.status])}</span>` : ''}
           </div>
         </div>
@@ -654,12 +664,19 @@ function fillSettingsForm() {
   // Saved keys are never sent back to this window; just say they're there.
   form.elements.deepgramApiKey.placeholder = s.hasDeepgramKey ? 'Saved. Paste a new key to replace it' : 'Paste key';
   form.elements.anthropicApiKey.placeholder = s.hasAnthropicKey ? 'Saved. Paste a new key to replace it' : 'sk-ant-…';
+  const c = s.costs || {};
+  const row = (label, v = {}) => `
+    <div class="cost-row"><span>${label}</span><strong>${money((v.transcription || 0) + (v.ai || 0))}</strong>
+    <small>Transcription ${money(v.transcription)} · AI ${money(v.ai)}</small></div>`;
+  $('#costSummary').innerHTML = row('This month', c.thisMonth) + row('Last month', c.lastMonth) + row('All time', c.allTime);
   $('#encryptionHint').textContent = s.encrypted
     ? 'Keys are stored encrypted on this computer.'
     : 'Keys are stored on this computer.';
 }
 
-function openSettings() {
+async function openSettings() {
+  // Refresh so the cost totals are current.
+  state.settings = { ...state.settings, ...(await api.getSettings()) };
   fillSettingsForm();
   const dialog = $('#settingsDialog');
   dialog.returnValue = '';

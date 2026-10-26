@@ -216,3 +216,11 @@ h1 { font-size: 30px; margin: 12px 0 6px; letter-spacing: -0.4px; }
 .update-banner .bar { height: 5px; background: #2e3b60; }
 .update-banner .bar i { background: var(--accent); }
 .about-row { justify-content: space-between; }
+
+/* ---------- usage & cost ---------- */
+.cost-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.cost-row { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; }
+.cost-row span { font-size: 12px; color: var(--muted); }
+.cost-row strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.cost-row small { font-size: 11px; }
+.dialog .hint a { color: var(--accent-text); }
