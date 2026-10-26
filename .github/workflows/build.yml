@@ -85,11 +85,33 @@ jobs:
             dist/latest*.yml
           if-no-files-found: error
 
+  # The Claude Desktop extension (an .mcpb bundle of the MCP server in mcp/).
+  extension:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the extension
+        working-directory: mcp
+        run: |
+          npm ci --omit=dev
+          npx -y @anthropic-ai/mcpb@2.1.2 validate manifest.json
+          npx -y @anthropic-ai/mcpb@2.1.2 pack . ../Sidebar-for-Claude.mcpb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidebar-claude-extension
+          path: Sidebar-for-Claude.mcpb
+          if-no-files-found: error
+
   release:
     # Installed copies auto-update from the latest release, so only ever
     # publish what has been merged into main.
     if: github.ref == 'refs/heads/main'
-    needs: build
+    needs: [build, extension]
     runs-on: ubuntu-latest
     concurrency: release
     permissions:
@@ -137,6 +159,7 @@ jobs:
             | Mac with Apple chip (M1 or newer) | `Sidebar-${{ steps.version.outputs.tag }}-arm64.dmg` |
             | Mac with Intel chip | `Sidebar-${{ steps.version.outputs.tag }}-x64.dmg` |
             | Windows | `Sidebar-Setup-${{ steps.version.outputs.tag }}.exe` |
+            | Claude Desktop extension (optional) | `Sidebar-for-Claude.mcpb` |
 
             Not sure which Mac you have? Apple menu → About This Mac: it shows either "Chip: Apple M…" or "Processor: Intel…".
 

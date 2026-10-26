@@ -169,8 +169,21 @@ function createWindow() {
   });
 }
 
+// Show on the Dock / taskbar icon that Sidebar is recording.
+function showRecordingOnAppIcon(recording) {
+  if (process.platform === 'darwin' && app.dock) {
+    app.dock.setBadge(recording ? 'REC' : '');
+  } else if (process.platform === 'win32' && mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.setOverlayIcon(
+      recording ? nativeImage.createFromPath(path.join(ASSETS, 'recording-overlay.png')) : null,
+      recording ? 'Recording' : '',
+    );
+  }
+}
+
 function setRecording(id) {
   activeRecordingId = id;
+  showRecordingOnAppIcon(Boolean(id));
   // Keep the computer awake while recording (an in-person hearing can run
   // past the idle-sleep timer with nobody touching the laptop).
   if (id && sleepBlocker === null) sleepBlocker = powerSaveBlocker.start('prevent-app-suspension');
@@ -557,10 +570,11 @@ function registerIpc() {
 
   handle('permissions:openSettings', (_e, kind) => {
     if (process.platform === 'darwin') {
+      if (kind === 'sound') return shell.openExternal('x-apple.systempreferences:com.apple.preference.sound?input');
       const pane = kind === 'microphone' ? 'Privacy_Microphone' : 'Privacy_ScreenCapture';
       shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
     } else if (process.platform === 'win32') {
-      shell.openExternal('ms-settings:privacy-microphone');
+      shell.openExternal(kind === 'sound' ? 'ms-settings:sound' : 'ms-settings:privacy-microphone');
     }
   });
 
@@ -829,6 +843,8 @@ function registerIpc() {
     if (fault.kind === 'disk' && !fault.recovered) {
       notify('Sidebar can’t save audio', `${fault.error || 'Saving failed'}. It keeps the audio in memory and keeps trying. Free up disk space if your disk is full.`);
       showWindow();
+    } else if (fault.kind === 'mic-silent' && !fault.recovered) {
+      notify('Your microphone seems silent', 'Sidebar hasn’t heard you for 2 minutes while others are talking. It may be muted or the wrong mic. Open Sidebar and click “Reconnect microphone”.');
     } else if (fault.kind === 'capture' && fault.recovered) {
       notify('Recording reconnected', 'An audio device changed or dropped out. Sidebar reconnected and is still recording.');
     } else if (fault.kind === 'capture') {

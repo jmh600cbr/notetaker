@@ -203,8 +203,10 @@ test('app lock checks the password and blocks repeated guesses', () => {
   assert.equal(lock.lock(), true);
   assert.equal(lock.unlock('wrong'), false);
   assert.equal(lock.locked, true);
+  assert.ok(fs.existsSync(path.join(dir, 'locked')), 'marker tells the Claude extension to stay out');
   assert.equal(lock.unlock('correct horse'), true);
   assert.equal(lock.locked, false);
+  assert.ok(!fs.existsSync(path.join(dir, 'locked')));
   assert.ok(!fs.readFileSync(path.join(dir, 'lock.json'), 'utf8').includes('correct horse'));
   for (let i = 0; i < 5; i++) lock.unlock('nope');
   assert.throws(() => lock.unlock('correct horse'), /Too many attempts/);

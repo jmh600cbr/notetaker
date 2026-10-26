@@ -112,6 +112,8 @@ h1 { font-size: 30px; margin: 12px 0 6px; letter-spacing: -0.4px; }
 .callout { display: flex; gap: 14px; align-items: center; justify-content: space-between; background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 10px; padding: 12px 14px; margin-bottom: 18px; line-height: 1.45; }
 .callout.error { background: var(--err-bg); border-color: var(--err-line); }
 .callout .btn { flex-shrink: 0; }
+.callout > div:first-child { flex: 1; min-width: 0; }
+.callout .row { flex-shrink: 0; }
 
 /* ---------- recording ---------- */
 .recording { text-align: center; padding-top: 60px; }

@@ -1,0 +1,30 @@
+{
+  "manifest_version": "0.3",
+  "name": "sidebar",
+  "display_name": "Sidebar",
+  "version": "0.1.0",
+  "description": "Lets Claude read your Sidebar meeting notes, transcripts, matters and time entries.",
+  "long_description": "Ask Claude about your recorded meetings: \"What did the judge order in Smith v. Jones?\", \"Draft a reporting letter from yesterday's hearing\", \"List my time entries for this week\". Read-only. Works only when \"Let Claude read my meetings\" is turned on in Sidebar's Settings, and never while Sidebar is locked.",
+  "author": { "name": "Sidebar" },
+  "icon": "icon.png",
+  "server": {
+    "type": "node",
+    "entry_point": "server/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server/index.js"],
+      "env": {}
+    }
+  },
+  "tools": [
+    { "name": "list_meetings", "description": "List recorded meetings, optionally by matter or date" },
+    { "name": "search_meetings", "description": "Search titles, notes and full transcripts" },
+    { "name": "get_meeting", "description": "Get a meeting's notes, time entry, flagged moments and optionally its transcript" },
+    { "name": "list_matters", "description": "List matters with meeting counts" },
+    { "name": "get_time_entries", "description": "Get drafted time entries and total hours for a period or matter" }
+  ],
+  "compatibility": {
+    "platforms": ["darwin", "win32"],
+    "runtimes": { "node": ">=18.0.0" }
+  }
+}
