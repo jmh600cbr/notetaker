@@ -18,9 +18,19 @@ const {
   net,
 } = require('electron');
 const { initMain: initAudioLoopback } = require('electron-audio-loopback');
-const { Store, sanitizeSettings } = require('./store');
+const { Store, sanitizeSettings, PATH_SETTINGS } = require('./store');
 const { transcribeMeeting } = require('./transcribe');
-const { summarize, answerQuestion, identifySpeakers, formatTranscript } = require('./summarize');
+const {
+  summarize,
+  answerQuestion,
+  answerMatterQuestion,
+  identifySpeakers,
+  draftTimeEntry,
+  formatTranscript,
+} = require('./summarize');
+const { buildDocx } = require('./docx');
+const { Calendar, attendeeNames } = require('./calendar');
+const { AppLock } = require('./lock');
 const { Updater } = require('./updater');
 const { claudeCost, deepgramCost } = require('./pricing');
 
@@ -30,6 +40,8 @@ initAudioLoopback();
 
 // Ctrl/Cmd+Shift+R alone is the browsers' hard-reload, so add Alt/Option.
 const SHORTCUT = 'CommandOrControl+Alt+Shift+R';
+// Flag an important moment while recording.
+const MARK_SHORTCUT = 'CommandOrControl+Alt+Shift+M';
 const APP_ID = 'io.github.jmh600cbr.sidebar';
 const ASSETS = path.join(__dirname, '..', '..', 'assets');
 
@@ -43,6 +55,8 @@ let recordingInfo = { systemAudio: true, micAudio: true };
 let sleepBlocker = null;
 let isQuitting = false;
 let updater = null;
+let calendar = null;
+let appLock = null;
 
 const isRecording = () => activeRecordingId !== null;
 const MIN_FREE_BYTES = 300 * 1024 * 1024;
@@ -305,7 +319,18 @@ async function processMeeting(id) {
     // Re-read so speaker names and note style edited during processing are used.
     meeting = store.getMeeting(id);
     const summary = await summarize({ apiKey: settings.anthropicApiKey, meeting, segments, onUsage });
-    meeting = store.updateMeeting(id, { summary, status: 'ready', error: null });
+    meeting = store.updateMeeting(id, { summary });
+
+    // A ready-to-paste time entry. Nice to have; never blocks the notes.
+    try {
+      const timeEntry = await draftTimeEntry({ apiKey: settings.anthropicApiKey, meeting, segments, onUsage });
+      meeting = store.updateMeeting(id, { timeEntry });
+    } catch (err) {
+      console.warn('Time entry failed:', err.message);
+    }
+    meeting = store.updateMeeting(id, { status: 'ready', error: null });
+    await saveToFolder(id);
+    meeting = store.getMeeting(id);
 
     if (!keepAudio && !meeting.warning) meeting = store.deleteAudio(id);
     broadcastMeeting(meeting);
@@ -323,13 +348,53 @@ async function processMeeting(id) {
   }
 }
 
+// Writes the finished notes into the user's chosen folder (e.g. in OneDrive),
+// in a subfolder per matter, replacing the previous copy if it moved.
+async function saveToFolder(id) {
+  const settings = store.getSettings();
+  if (!settings.saveFolder) return;
+  let meeting = store.getMeeting(id);
+  if (meeting.status !== 'ready' || !meeting.summary) return;
+  try {
+    const dir = meeting.matter ? path.join(settings.saveFolder, safeFileName(meeting.matter)) : settings.saveFolder;
+    fs.mkdirSync(dir, { recursive: true });
+    const d = new Date(meeting.createdAt);
+    const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const base = path.join(dir, `${day} ${safeFileName(meeting.title)}`);
+    const segments = store.getTranscript(id);
+    const written = [];
+    if (settings.saveFormat !== 'md') {
+      const buf = await buildDocx({ meeting, segments, headerText: settings.docHeader, logoPath: settings.docLogo });
+      fs.writeFileSync(`${base}.docx`, buf);
+      written.push(`${base}.docx`);
+    }
+    if (settings.saveFormat !== 'docx') {
+      fs.writeFileSync(`${base}.md`, meetingToMarkdown(meeting, segments));
+      written.push(`${base}.md`);
+    }
+    // Renamed or moved to another matter: remove the old copies.
+    for (const old of meeting.savedFiles || []) {
+      if (!written.includes(old)) fs.rmSync(old, { force: true });
+    }
+    meeting = store.updateMeeting(id, { savedFiles: written, saveError: null });
+  } catch (err) {
+    const message = err.code === 'EBUSY' || err.code === 'EPERM'
+      ? 'The file is open in another app (e.g. Word). Close it and click "Save to folder" again.'
+      : err.message;
+    meeting = store.updateMeeting(id, { saveError: message });
+    notify('Couldn’t save notes to your folder', message, id);
+  }
+  broadcastMeeting(meeting);
+}
+
 function meetingToMarkdown(meeting, segments) {
   const date = new Date(meeting.createdAt).toLocaleString();
   return [
     `# ${meeting.title}`,
     '',
-    `_${date} · ${Math.max(1, Math.round((meeting.durationSec || 0) / 60))} min · Notes by Sidebar_`,
+    `_${date} · ${Math.max(1, Math.round((meeting.durationSec || 0) / 60))} min${meeting.matter ? ` · Matter: ${meeting.matter}` : ''} · Notes by Sidebar_`,
     '',
+    ...(meeting.timeEntry ? [`**Time entry:** ${meeting.timeEntry.hours.toFixed(1)} h — ${meeting.timeEntry.description}`, ''] : []),
     meeting.summary || '_No summary yet._',
     '',
     '---',
@@ -346,17 +411,39 @@ function meetingToMarkdown(meeting, segments) {
 
 // ---- IPC ----
 
+// While Sidebar is locked, nothing that reveals or changes meetings or
+// settings works. Recording itself, the lock screen and updates still do.
+const LOCKED_CHANNELS = new Set([
+  'settings:save', 'settings:import', 'settings:export', 'settings:chooseFolder', 'settings:chooseLogo', 'settings:clear',
+  'meetings:list', 'meetings:get', 'meetings:update', 'meetings:delete', 'meetings:retry', 'meetings:resummarize',
+  'meetings:ask', 'meetings:askMatter', 'meetings:matters', 'meetings:export', 'meetings:copyText', 'meetings:search', 'meetings:saveToFolder',
+  'calendar:connect', 'calendar:disconnect', 'calendar:upcoming', 'lock:disable',
+]);
+
+function handle(channel, fn) {
+  ipcMain.handle(channel, (...args) => {
+    if (appLock && appLock.locked && LOCKED_CHANNELS.has(channel)) throw new Error('Sidebar is locked.');
+    return fn(...args);
+  });
+}
+
 function registerIpc() {
   // The UI never receives the API keys themselves, only whether they're set.
-  ipcMain.handle('settings:get', () => ({
+  handle('settings:get', () => ({
     ...store.getPublicSettings(),
     platform: process.platform,
     shortcut: SHORTCUT,
     encrypted: store.canEncrypt(),
     costs: store.getCostSummary(),
+    markShortcut: MARK_SHORTCUT,
+    locked: appLock.locked,
+    lockEnabled: appLock.enabled(),
+    touchId: process.platform === 'darwin' && systemPreferences.canPromptTouchID(),
   }));
 
-  ipcMain.handle('settings:save', (_e, patch) => {
+  handle('settings:save', (_e, patch) => {
+    patch = { ...patch };
+    for (const key of PATH_SETTINGS) delete patch[key];
     const saved = store.saveSettings(patch);
     if ('openAtLogin' in patch) {
       app.setLoginItemSettings({ openAtLogin: Boolean(patch.openAtLogin), args: ['--hidden'] });
@@ -366,7 +453,32 @@ function registerIpc() {
 
   // Team setup: an admin exports a config file once and shares it privately;
   // teammates import it instead of pasting keys.
-  ipcMain.handle('settings:import', async () => {
+  // Folders and files are picked in a native dialog, never typed in.
+  handle('settings:chooseFolder', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose where to save notes (for example a folder in OneDrive)',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    if (canceled || !filePaths[0]) return null;
+    return store.saveSettings({ saveFolder: filePaths[0] });
+  });
+
+  handle('settings:chooseLogo', async () => {
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+      title: 'Choose a logo for Word documents',
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }],
+      properties: ['openFile'],
+    });
+    if (canceled || !filePaths[0]) return null;
+    return store.saveSettings({ docLogo: filePaths[0] });
+  });
+
+  handle('settings:clear', (_e, key) => {
+    if (!PATH_SETTINGS.includes(key)) return null;
+    return store.saveSettings({ [key]: '' });
+  });
+
+  handle('settings:import', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
       title: 'Import team setup',
       filters: [{ name: 'Sidebar setup', extensions: ['json'] }],
@@ -374,7 +486,10 @@ function registerIpc() {
     });
     if (canceled || !filePaths[0]) return null;
     const data = JSON.parse(fs.readFileSync(filePaths[0], 'utf8'));
-    const allowed = ['deepgramApiKey', 'anthropicApiKey', 'defaultTemplate', 'language', 'headphones', 'keepAudio'];
+    const allowed = [
+      'deepgramApiKey', 'anthropicApiKey', 'defaultTemplate', 'language', 'headphones', 'keepAudio',
+      'docHeader', 'calendarClientId', 'calendarTenant', 'retentionDays', 'retentionScope', 'deepgramPerMinute',
+    ];
     const patch = sanitizeSettings(Object.fromEntries(Object.entries(data).filter(([k]) => allowed.includes(k))));
     if (!Object.keys(patch).length) throw new Error('Not a Sidebar setup file');
 
@@ -387,6 +502,12 @@ function registerIpc() {
       language: `Spoken language: ${patch.language}`,
       headphones: `Headphones mode: ${patch.headphones ? 'on' : 'off'}`,
       keepAudio: `Keep audio after notes: ${patch.keepAudio ? 'on' : 'off'}`,
+      docHeader: `Word document header: ${String(patch.docHeader || '').split('\n')[0]}`,
+      calendarClientId: 'Outlook calendar app registration',
+      calendarTenant: `Microsoft tenant: ${patch.calendarTenant}`,
+      retentionDays: `Auto-delete after: ${patch.retentionDays ? `${patch.retentionDays} days` : 'never'}`,
+      retentionScope: `Auto-delete: ${patch.retentionScope === 'everything' ? 'whole meetings' : 'recordings and transcripts'}`,
+      deepgramPerMinute: `Transcription price: $${patch.deepgramPerMinute}/min`,
     };
     const { response } = await dialog.showMessageBox(mainWindow, {
       type: 'question',
@@ -400,7 +521,7 @@ function registerIpc() {
     return store.saveSettings(patch);
   });
 
-  ipcMain.handle('settings:export', async () => {
+  handle('settings:export', async () => {
     const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
       title: 'Export team setup',
       defaultPath: 'sidebar-team-setup.json',
@@ -414,19 +535,25 @@ function registerIpc() {
       language: s.language,
       headphones: s.headphones,
       keepAudio: s.keepAudio,
+      docHeader: s.docHeader,
+      calendarClientId: s.calendarClientId,
+      calendarTenant: s.calendarTenant,
+      retentionDays: s.retentionDays,
+      retentionScope: s.retentionScope,
+      deepgramPerMinute: s.deepgramPerMinute,
     };
     // Contains API keys: readable by the current user only.
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), { mode: 0o600 });
     return true;
   });
 
-  ipcMain.handle('permissions:check', async () => {
+  handle('permissions:check', async () => {
     if (process.platform !== 'darwin') return { microphone: true, screen: 'granted' };
     const microphone = await systemPreferences.askForMediaAccess('microphone');
     return { microphone, screen: systemPreferences.getMediaAccessStatus('screen') };
   });
 
-  ipcMain.handle('permissions:openSettings', (_e, kind) => {
+  handle('permissions:openSettings', (_e, kind) => {
     if (process.platform === 'darwin') {
       const pane = kind === 'microphone' ? 'Privacy_Microphone' : 'Privacy_ScreenCapture';
       shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`);
@@ -435,22 +562,67 @@ function registerIpc() {
     }
   });
 
-  ipcMain.handle('meetings:list', () => store.listMeetings());
+  handle('meetings:list', () => store.listMeetings());
 
-  ipcMain.handle('meetings:get', (_e, id) => ({
+  handle('meetings:get', (_e, id) => ({
     meeting: store.getMeeting(id),
     transcript: store.getTranscript(id),
   }));
 
-  ipcMain.handle('meetings:update', (_e, id, patch) => {
+  handle('meetings:update', (_e, id, patch) => {
     const allowed = {};
     if (typeof patch.title === 'string') allowed.title = patch.title.slice(0, 200);
     if (patch.speakers && typeof patch.speakers === 'object') allowed.speakers = patch.speakers;
-    if (typeof patch.template === 'string') allowed.template = patch.template;
-    return broadcastMeeting(store.updateMeeting(id, allowed));
+    if (['court', 'client', 'general'].includes(patch.template)) allowed.template = patch.template;
+    if (typeof patch.matter === 'string') allowed.matter = patch.matter.trim().slice(0, 120);
+    if (Array.isArray(patch.marks)) {
+      allowed.marks = patch.marks
+        .filter((m) => m && Number.isFinite(m.t))
+        .slice(0, 200)
+        .map((m) => ({ t: Math.max(0, m.t), label: String(m.label || '').slice(0, 200) }));
+    }
+    const meeting = broadcastMeeting(store.updateMeeting(id, allowed));
+    // Keep the copy in the save folder in step with renames and matter changes.
+    if ((allowed.title || 'matter' in allowed) && (meeting.savedFiles || []).length) saveToFolder(id);
+    return meeting;
   });
 
-  ipcMain.handle('meetings:delete', async (_e, id) => {
+  handle('meetings:saveToFolder', (_e, id) => saveToFolder(id));
+
+  handle('meetings:matters', () => store.listMatters());
+
+  // Search titles, matters, notes and transcripts.
+  handle('meetings:search', (_e, query) => {
+    const q = String(query || '').toLowerCase().trim();
+    if (!q) return null;
+    return store
+      .listMeetings()
+      .filter((m) => {
+        const text = [m.title, m.matter, m.summary, m.timeEntry && m.timeEntry.description].join(' ').toLowerCase();
+        if (text.includes(q)) return true;
+        return store.getTranscript(m.id).some((seg) => seg.text.toLowerCase().includes(q));
+      })
+      .map((m) => m.id);
+  });
+
+  handle('meetings:askMatter', async (_e, id, question) => {
+    const settings = store.getSettings();
+    const matter = store.getMeeting(id).matter;
+    if (!matter) throw new Error('This meeting has no matter.');
+    const items = store
+      .listMeetings()
+      .filter((m) => m.matter === matter && (m.summary || store.hasTranscript(m.id)))
+      .map((m) => ({ meeting: m, segments: store.getTranscript(m.id) }));
+    return answerMatterQuestion({
+      apiKey: settings.anthropicApiKey,
+      matter,
+      items,
+      question: String(question).slice(0, 2000),
+      onUsage: (usage) => broadcastMeeting(store.addCost(id, { ai: claudeCost(usage) }) || store.getMeeting(id)),
+    });
+  });
+
+  handle('meetings:delete', async (_e, id) => {
     if (processing.has(id)) {
       await dialog.showMessageBox(mainWindow, {
         type: 'info',
@@ -472,18 +644,18 @@ function registerIpc() {
     return true;
   });
 
-  ipcMain.handle('meetings:retry', (_e, id) => {
+  handle('meetings:retry', (_e, id) => {
     processMeeting(id);
     return true;
   });
 
   // The current notes stay until the new ones succeed.
-  ipcMain.handle('meetings:resummarize', (_e, id) => {
+  handle('meetings:resummarize', (_e, id) => {
     processMeeting(id);
     return true;
   });
 
-  ipcMain.handle('meetings:ask', async (_e, id, question) => {
+  handle('meetings:ask', async (_e, id, question) => {
     const settings = store.getSettings();
     return answerQuestion({
       apiKey: settings.anthropicApiKey,
@@ -494,25 +666,34 @@ function registerIpc() {
     });
   });
 
-  ipcMain.handle('meetings:export', async (_e, id) => {
+  handle('meetings:export', async (_e, id) => {
     const meeting = store.getMeeting(id);
     const safeName = safeFileName(meeting.title);
     const { canceled, filePath } = await dialog.showSaveDialog(mainWindow, {
       title: 'Export notes',
-      defaultPath: `${safeName}.md`,
-      filters: [{ name: 'Markdown', extensions: ['md'] }],
+      defaultPath: `${safeName}.docx`,
+      filters: [
+        { name: 'Word document', extensions: ['docx'] },
+        { name: 'Markdown', extensions: ['md'] },
+      ],
     });
     if (canceled || !filePath) return false;
-    fs.writeFileSync(filePath, meetingToMarkdown(meeting, store.getTranscript(id)));
+    const segments = store.getTranscript(id);
+    if (filePath.toLowerCase().endsWith('.md')) {
+      fs.writeFileSync(filePath, meetingToMarkdown(meeting, segments));
+    } else {
+      const settings = store.getSettings();
+      fs.writeFileSync(filePath, await buildDocx({ meeting, segments, headerText: settings.docHeader, logoPath: settings.docLogo }));
+    }
     shell.showItemInFolder(filePath);
     return true;
   });
 
-  ipcMain.handle('meetings:copyText', (_e, id) => {
+  handle('meetings:copyText', (_e, id) => {
     return meetingToMarkdown(store.getMeeting(id), store.getTranscript(id));
   });
 
-  ipcMain.handle('recording:start', (_e, opts) => {
+  handle('recording:start', (_e, opts) => {
     if (activeRecordingId) throw new Error('Sidebar is already recording.');
     const free = store.freeSpace();
     if (free !== null && free < MIN_FREE_BYTES) {
@@ -523,19 +704,78 @@ function registerIpc() {
       title: String(opts.title || '').slice(0, 200),
       template: ['court', 'client', 'general'].includes(opts.template) ? opts.template : settings.defaultTemplate,
       keyterms: (Array.isArray(opts.keyterms) ? opts.keyterms : []).map(String).slice(0, 50),
+      matter: String(opts.matter || '').trim().slice(0, 120),
     });
     recordingInfo = { systemAudio: true, micAudio: true };
     setRecording(meeting.id);
+    // Fill in the title and attendee names from the Outlook meeting that's on
+    // now. Done in the background so recording starts immediately.
+    if (calendar.configured()) fillFromCalendar(meeting.id, Boolean(opts.title));
     return broadcastMeeting(meeting);
   });
 
-  ipcMain.handle('recording:chunk', (_e, id, part, data) => {
+  handle('recording:mark', (_e, id, t) => {
+    if (id !== activeRecordingId || !Number.isFinite(t)) return null;
+    const m = store.getMeeting(id);
+    const marks = [...(m.marks || []), { t: Math.max(0, t), label: '' }].slice(0, 200);
+    return broadcastMeeting(store.updateMeeting(id, { marks }));
+  });
+
+  // ---- Outlook calendar ----
+  ipcMain.handle('calendar:status', () => calendar.status());
+  handle('calendar:connect', async () => {
+    const result = await calendar.connect();
+    scheduleReminders();
+    return result;
+  });
+  handle('calendar:disconnect', () => calendar.disconnect());
+  handle('calendar:upcoming', async () => {
+    const events = await calendar.upcoming(12);
+    return events.slice(0, 5).map((e) => ({
+      id: e.id,
+      subject: e.subject || '(No title)',
+      start: `${e.start.dateTime}Z`,
+      end: `${e.end.dateTime}Z`,
+      online: Boolean(e.isOnlineMeeting),
+    }));
+  });
+
+  // ---- app lock ----
+  ipcMain.handle('lock:status', () => ({ enabled: appLock.enabled(), locked: appLock.locked }));
+  ipcMain.handle('lock:unlock', (_e, password) => {
+    const ok = appLock.unlock(password);
+    if (ok) send('lock:changed', false);
+    return ok;
+  });
+  ipcMain.handle('lock:touchId', async () => {
+    if (process.platform !== 'darwin' || !systemPreferences.canPromptTouchID()) return false;
+    try {
+      await systemPreferences.promptTouchID('unlock Sidebar');
+      appLock.unlockTrusted();
+      send('lock:changed', false);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  ipcMain.handle('lock:enable', (_e, password) => {
+    if (appLock.enabled()) throw new Error('A password is already set.');
+    appLock.setPassword(password);
+    return true;
+  });
+  handle('lock:disable', (_e, password) => {
+    appLock.disable(password);
+    return true;
+  });
+  ipcMain.handle('lock:lockNow', () => lockApp());
+
+  handle('recording:chunk', (_e, id, part, data) => {
     if (!Number.isInteger(part) || part < 0 || part > 999) throw new Error('Invalid audio part');
     store.appendAudio(id, part, Buffer.from(data));
     return true;
   });
 
-  ipcMain.handle('recording:stop', (_e, id, durationSec, { quitting = false, unsaved = 0 } = {}) => {
+  handle('recording:stop', (_e, id, durationSec, { quitting = false, unsaved = 0 } = {}) => {
     if (activeRecordingId === id) setRecording(null);
     const patch = { durationSec: Math.round(durationSec || 0) };
     if (unsaved) {
@@ -555,7 +795,7 @@ function registerIpc() {
     return true;
   });
 
-  ipcMain.handle('recording:discard', (_e, id) => {
+  handle('recording:discard', (_e, id) => {
     if (activeRecordingId === id) setRecording(null);
     store.deleteMeeting(id);
     return true;
@@ -595,9 +835,9 @@ function registerIpc() {
     }
   });
 
-  ipcMain.handle('updater:get', () => (updater ? updater.state : { status: 'idle' }));
-  ipcMain.handle('updater:check', () => (updater ? updater.check(true) : { status: 'idle' }));
-  ipcMain.handle('updater:install', () => {
+  handle('updater:get', () => (updater ? updater.state : { status: 'idle' }));
+  handle('updater:check', () => (updater ? updater.check(true) : { status: 'idle' }));
+  handle('updater:install', () => {
     if (!updater) return { ok: false };
     // Downloading is fine any time; only the restart has to wait.
     if (updater.state.status === 'ready' && !canRestart()) {
@@ -607,9 +847,104 @@ function registerIpc() {
     return { ok: true };
   });
 
-  ipcMain.handle('shell:openExternal', (_e, url) => {
+  handle('shell:openExternal', (_e, url) => {
     if (typeof url === 'string' && url.startsWith('https://')) shell.openExternal(url);
   });
+}
+
+// ---- calendar ----
+
+async function fillFromCalendar(id, userTyped) {
+  const event = await calendar.currentEvent();
+  if (!event) return;
+  try {
+    const m = store.getMeeting(id);
+    const names = attendeeNames(event);
+    const patch = {
+      attendees: names,
+      keyterms: [...new Set([...(m.keyterms || []), ...names])].slice(0, 50),
+    };
+    if (!userTyped && event.subject) patch.title = event.subject.slice(0, 200);
+    broadcastMeeting(store.updateMeeting(id, patch));
+  } catch {
+    // meeting discarded meanwhile
+  }
+}
+
+// Remind the user to record when an Outlook meeting starts.
+const reminded = new Set();
+let reminderTimers = [];
+async function scheduleReminders() {
+  reminderTimers.forEach(clearTimeout);
+  reminderTimers = [];
+  const settings = store.getSettings();
+  if (!settings.calendarReminders || !calendar.configured()) return;
+  const events = await calendar.upcoming(1);
+  for (const e of events) {
+    const start = Date.parse(`${e.start.dateTime}Z`);
+    const wait = start - Date.now() - 30000;
+    if (reminded.has(e.id) || wait > 3600000 || start < Date.now() - 60000) continue;
+    reminderTimers.push(
+      setTimeout(() => {
+        reminded.add(e.id);
+        if (isRecording()) return;
+        const n = new Notification({ title: `${e.subject || 'A meeting'} is starting`, body: 'Click to start recording with Sidebar.' });
+        liveNotifications.add(n);
+        n.on('click', () => {
+          liveNotifications.delete(n);
+          toggleRecording();
+        });
+        n.on('close', () => liveNotifications.delete(n));
+        n.show();
+      }, Math.max(0, wait)),
+    );
+  }
+}
+
+// ---- app lock ----
+
+function lockApp() {
+  if (!appLock.lock()) return false;
+  send('lock:changed', true);
+  return true;
+}
+
+// Lock after the computer has been idle for a while, or when the screen locks
+// or the computer sleeps.
+function startAutoLock() {
+  setInterval(() => {
+    if (!appLock.enabled() || appLock.locked) return;
+    const minutes = store.getSettings().lockAfterMinutes || 15;
+    if (powerMonitor.getSystemIdleTime() >= minutes * 60) lockApp();
+  }, 30000);
+  powerMonitor.on('lock-screen', lockApp);
+  powerMonitor.on('suspend', lockApp);
+}
+
+// ---- retention ----
+
+// Deletes old recordings and transcripts (keeping the notes), or whole
+// meetings, after the number of days set in Settings.
+function runRetention() {
+  const { retentionDays, retentionScope } = store.getSettings();
+  if (!retentionDays) return;
+  const cutoff = Date.now() - retentionDays * 86400000;
+  for (const m of store.listMeetings()) {
+    if (Date.parse(m.createdAt) > cutoff) continue;
+    if (m.id === activeRecordingId || processing.has(m.id) || !['ready', 'error'].includes(m.status)) continue;
+    try {
+      if (retentionScope === 'everything') {
+        store.deleteMeeting(m.id);
+      } else if (m.hasAudio !== false || store.hasTranscript(m.id)) {
+        store.deleteAudio(m.id);
+        store.deleteTranscript(m.id);
+        store.updateMeeting(m.id, { transcriptDeleted: true });
+      }
+    } catch (err) {
+      console.warn('Retention failed for', m.id, err.message);
+    }
+  }
+  send('meetings:refresh');
 }
 
 // ---- app lifecycle ----
@@ -646,6 +981,7 @@ app.whenReady().then(() => {
   if (!isPrimaryInstance) return;
   store = new Store(app.getPath('userData'), safeStorage);
   store.recoverInterrupted();
+  appLock = new AppLock(app.getPath('userData'));
   registerIpc();
   createWindow();
   createTray();
@@ -661,6 +997,25 @@ app.whenReady().then(() => {
     canRestart,
   });
   updater.start();
+
+  calendar = new Calendar({
+    baseDir: app.getPath('userData'),
+    safeStorage,
+    shell,
+    getSettings: () => store.getSettings(),
+    fetchImpl: (url, init) => net.fetch(url, init),
+  });
+  scheduleReminders();
+  setInterval(scheduleReminders, 10 * 60000);
+
+  startAutoLock();
+  runRetention();
+  setInterval(runRetention, 6 * 3600000);
+
+  globalShortcut.register(MARK_SHORTCUT, () => {
+    if (!isRecording() || !mainWindow) return;
+    mainWindow.webContents.executeJavaScript('window.sidebarMark && window.sidebarMark()').catch(() => {});
+  });
 
   if (!globalShortcut.register(SHORTCUT, toggleRecording)) {
     console.warn(`Could not register ${SHORTCUT}; another app is using it.`);

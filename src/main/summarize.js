@@ -104,11 +104,24 @@ function localWhen(iso) {
   };
 }
 
-function transcriptBlock(meeting, segments) {
+function meetingXml(meeting, body) {
   const when = localWhen(meeting.createdAt);
+  const matter = meeting.matter ? ` matter="${attr(meeting.matter)}"` : '';
+  const marks = (meeting.marks || []).length
+    ? `\n<flagged_moments note="Moments the user marked as important while recording.">\n${meeting.marks
+        .map((m) => `[${formatTimestamp(m.t)}]${m.label ? ` ${m.label}` : ''}`)
+        .join('\n')}\n</flagged_moments>`
+    : '';
+  return `<meeting title="${attr(meeting.title)}" date="${attr(when.date)}" started="${attr(when.time)}"${matter}>${marks}\n${body}\n</meeting>`;
+}
+
+function transcriptBlock(meeting, segments) {
   return {
     type: 'text',
-    text: `<meeting title="${attr(meeting.title)}" date="${attr(when.date)}" started="${attr(when.time)}">\n<transcript note="Timestamps are positions in the recording; paused time is not counted.">\n${formatTranscript(segments, meeting.speakers || {})}\n</transcript>\n</meeting>`,
+    text: meetingXml(
+      meeting,
+      `<transcript note="Timestamps are positions in the recording; paused time is not counted.">\n${formatTranscript(segments, meeting.speakers || {})}\n</transcript>`,
+    ),
     cache_control: { type: 'ephemeral' },
   };
 }
@@ -139,15 +152,15 @@ function friendlyError(err) {
   return err;
 }
 
-async function askClaude({ apiKey, meeting, segments, instructions, effort, format, onUsage }) {
+async function askClaude({ apiKey, meeting, segments, blocks, instructions, effort, format, onUsage, maxTokens = 64000 }) {
   if (!apiKey) throw new Error('Add your Anthropic API key in Settings to create summaries.');
-  if (!segments.length) throw new Error('The transcript is empty, so there is nothing to summarize.');
+  if (!blocks && !segments.length) throw new Error('The transcript is empty, so there is nothing to summarize.');
   const client = new Anthropic({ apiKey });
   try {
     const message = await client.beta.messages
       .stream({
         model: MODEL,
-        max_tokens: 64000,
+        max_tokens: maxTokens,
         betas: ['server-side-fallback-2026-07-01'],
         fallbacks: 'default',
         output_config: format ? { effort, format } : { effort },
@@ -155,7 +168,7 @@ async function askClaude({ apiKey, meeting, segments, instructions, effort, form
         messages: [
           {
             role: 'user',
-            content: [transcriptBlock(meeting, segments), { type: 'text', text: instructions }],
+            content: [...(blocks || [transcriptBlock(meeting, segments)]), { type: 'text', text: instructions }],
           },
         ],
       })
@@ -179,9 +192,46 @@ async function askClaude({ apiKey, meeting, segments, instructions, effort, form
   }
 }
 
+const FLAGGED_INSTRUCTIONS = `
+
+## Flagged Moments
+The user marked the moments listed in <flagged_moments> while recording. For each one, in time order: its timestamp, what was said in the minute or so around it (quote the key words), and why it likely matters. Put this section right after the Overview.`;
+
 function summarize({ apiKey, meeting, segments, onUsage }) {
   const template = TEMPLATES[meeting.template] || TEMPLATES.general;
-  return askClaude({ apiKey, meeting, segments, instructions: template.instructions, effort: 'high', onUsage });
+  const instructions = template.instructions + ((meeting.marks || []).length ? FLAGGED_INSTRUCTIONS : '');
+  return askClaude({ apiKey, meeting, segments, instructions, effort: 'high', onUsage });
+}
+
+const TIME_ENTRY_SCHEMA = {
+  type: 'object',
+  properties: {
+    description: { type: 'string', description: 'One-sentence time entry narrative.' },
+  },
+  required: ['description'],
+  additionalProperties: false,
+};
+
+// Billing increments of 0.1 h (6 minutes), rounded up.
+function billableHours(seconds) {
+  return Math.max(0.1, Math.ceil((seconds || 0) / 360) / 10);
+}
+
+// A ready-to-paste docket/time entry for the meeting.
+async function draftTimeEntry({ apiKey, meeting, segments, onUsage }) {
+  const instructions = `Write the narrative for a lawyer's time entry for this meeting: one sentence, past tense, starting with a verb (e.g. "Attended…", "Conference with client re…"), naming the matter or proceeding and the main subject. Keep it factual and suitable for a client invoice: no privileged detail, no opinions, at most 30 words.`;
+  const text = await askClaude({
+    apiKey,
+    meeting,
+    segments,
+    onUsage,
+    instructions,
+    effort: 'low',
+    maxTokens: 4000,
+    format: { type: 'json_schema', schema: TIME_ENTRY_SCHEMA },
+  });
+  const seconds = meeting.recordedSec || meeting.durationSec;
+  return { hours: billableHours(seconds), description: JSON.parse(text).description.trim() };
 }
 
 const SPEAKER_SCHEMA = {
@@ -235,9 +285,44 @@ For each other label give a short name and/or role. Use "high" confidence only w
   return names;
 }
 
+// About 4 characters per token; leave plenty of the 1M-token context free.
+const MATTER_CHAR_BUDGET = 2400000;
+
+// Questions across every meeting in a matter. Uses full transcripts, falling
+// back to the notes for the oldest meetings if the matter is very large.
+function answerMatterQuestion({ apiKey, matter, items, question, onUsage }) {
+  const sorted = [...items].sort((a, b) => a.meeting.createdAt.localeCompare(b.meeting.createdAt));
+  let budget = MATTER_CHAR_BUDGET;
+  const parts = [];
+  for (const { meeting, segments } of [...sorted].reverse()) {
+    const transcript = formatTranscript(segments, meeting.speakers || {});
+    const body =
+      transcript && transcript.length < budget
+        ? `<transcript>\n${transcript}\n</transcript>`
+        : `<notes note="Transcript omitted for length; these are the meeting notes.">\n${meeting.summary || ''}\n</notes>`;
+    budget -= body.length;
+    parts.unshift(meetingXml(meeting, body));
+  }
+  if (!parts.length) throw new Error('There are no meetings with transcripts in this matter yet.');
+  const blocks = [{ type: 'text', text: `<matter name="${attr(matter)}">\n${parts.join('\n\n')}\n</matter>`, cache_control: { type: 'ephemeral' } }];
+  const instructions = `Answer this question using all the meetings in the matter. Be direct, say which meeting (date and title) each point comes from with timestamps, and say plainly if the meetings don't answer it.\n\nQuestion: ${question}`;
+  return askClaude({ apiKey, blocks, instructions, effort: 'medium', onUsage });
+}
+
 function answerQuestion({ apiKey, meeting, segments, question, onUsage }) {
   const instructions = `Answer this question about the meeting. Be direct, cite timestamps, and say plainly if the transcript does not answer it.\n\nQuestion: ${question}`;
   return askClaude({ apiKey, meeting, segments, instructions, effort: 'medium', onUsage });
 }
 
-module.exports = { summarize, answerQuestion, identifySpeakers, formatTranscript, formatTimestamp, transcriptBlock, TEMPLATES };
+module.exports = {
+  summarize,
+  answerQuestion,
+  answerMatterQuestion,
+  identifySpeakers,
+  draftTimeEntry,
+  billableHours,
+  formatTranscript,
+  formatTimestamp,
+  transcriptBlock,
+  TEMPLATES,
+};

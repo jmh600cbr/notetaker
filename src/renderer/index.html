@@ -20,12 +20,25 @@
           </div>
         </div>
         <button id="newBtn" class="btn primary block"><span class="dot"></span> New recording</button>
-        <input id="search" class="search" type="search" placeholder="Search notes" />
+        <input id="search" class="search" type="search" placeholder="Search notes and transcripts" />
+        <select id="matterFilter" class="search" aria-label="Filter by matter"></select>
         <ul id="meetingList" class="meeting-list"></ul>
         <div id="updateBanner" class="update-banner" hidden></div>
         <button id="settingsBtn" class="btn ghost block">Settings</button>
       </aside>
       <main id="view" class="view"></main>
+    </div>
+
+    <div id="lockScreen" class="lock-screen" hidden>
+      <form class="lock-card" id="lockForm">
+        <img src="../../assets/icon.png" alt="" />
+        <h2>Sidebar is locked</h2>
+        <p class="hint">Recording still works while Sidebar is locked.</p>
+        <input type="password" id="lockPassword" placeholder="Sidebar password" autocomplete="current-password" />
+        <button class="btn primary block">Unlock</button>
+        <button type="button" class="btn ghost block" id="touchIdBtn" hidden>Use Touch ID</button>
+        <p class="lock-error" id="lockError"></p>
+      </form>
     </div>
 
     <dialog id="settingsDialog" class="dialog">
@@ -85,6 +98,92 @@
             <input type="checkbox" name="openAtLogin" />
             <span>Open Sidebar when I log in <small>Starts quietly in the menu bar / system tray.</small></span>
           </label>
+        </section>
+
+        <section>
+          <h3>Saving &amp; Word documents</h3>
+          <div class="field">
+            <span>Save finished notes to a folder <small>Pick a folder inside OneDrive or SharePoint to have notes sync automatically. Each matter gets its own subfolder.</small></span>
+            <div class="row path-row">
+              <span class="path" id="saveFolderPath">Not set</span>
+              <button type="button" class="btn ghost small" id="chooseFolderBtn">Choose…</button>
+              <button type="button" class="btn ghost small" id="clearFolderBtn">Clear</button>
+            </div>
+          </div>
+          <label class="field">
+            <span>Save as</span>
+            <select name="saveFormat">
+              <option value="docx">Word (.docx)</option>
+              <option value="md">Markdown (.md)</option>
+              <option value="both">Word and Markdown</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Word document header <small>e.g. your firm's name and "Privileged &amp; Confidential". One item per line.</small></span>
+            <textarea name="docHeader" rows="2" placeholder="Example Law LLP&#10;Privileged &amp; Confidential"></textarea>
+          </label>
+          <div class="field">
+            <span>Logo for Word documents <small>PNG or JPG</small></span>
+            <div class="row path-row">
+              <span class="path" id="docLogoPath">None</span>
+              <button type="button" class="btn ghost small" id="chooseLogoBtn">Choose…</button>
+              <button type="button" class="btn ghost small" id="clearLogoBtn">Clear</button>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h3>Outlook calendar</h3>
+          <p class="hint">Names recordings after the meeting that's on, uses the attendees' names to improve the transcript, and reminds you to record when a meeting starts. Needs a one-time app registration by your Microsoft 365 administrator (see the README).</p>
+          <label class="field">
+            <span>Microsoft app (client) ID</span>
+            <input name="calendarClientId" autocomplete="off" placeholder="00000000-0000-0000-0000-000000000000" />
+          </label>
+          <label class="field">
+            <span>Tenant <small>your organization's tenant ID or domain, or "organizations"</small></span>
+            <input name="calendarTenant" autocomplete="off" />
+          </label>
+          <div class="row">
+            <button type="button" class="btn ghost" id="calendarBtn">Connect Outlook</button>
+            <span class="hint" id="calendarStatus"></span>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" name="calendarReminders" />
+            <span>Remind me to record when a meeting starts</span>
+          </label>
+        </section>
+
+        <section>
+          <h3>Privacy</h3>
+          <div class="field" id="lockSettings"></div>
+          <label class="field">
+            <span>Lock after the computer has been idle for</span>
+            <select name="lockAfterMinutes">
+              <option value="5">5 minutes</option>
+              <option value="15">15 minutes</option>
+              <option value="30">30 minutes</option>
+              <option value="60">1 hour</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Automatically delete</span>
+            <select name="retentionScope">
+              <option value="recordings">Audio and transcripts (keep the notes)</option>
+              <option value="everything">Whole meetings</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>after</span>
+            <select name="retentionDays">
+              <option value="0">Never</option>
+              <option value="30">30 days</option>
+              <option value="90">90 days</option>
+              <option value="180">180 days</option>
+              <option value="365">1 year</option>
+              <option value="730">2 years</option>
+            </select>
+          </label>
+          <p class="hint">Copies saved to your notes folder aren't affected.</p>
         </section>
 
         <section>
