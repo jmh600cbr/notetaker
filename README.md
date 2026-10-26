@@ -117,7 +117,7 @@ When that reaches `main`, the workflow publishes the installers as release `v0.1
 
 ### Updates
 
-Installed copies check for a new release on launch and every few hours, then show an **Update** button in the sidebar. Updates never restart Sidebar during a recording or while notes are being made.
+Installed copies check for a new release shortly after launch, every hour, and whenever you open the Sidebar window, then show an **Update** button in the sidebar. Updates never restart Sidebar during a recording or while notes are being made.
 
 - **Windows:** the update downloads in the background and installs on restart.
 - **Mac:** Sidebar downloads the new version in the background and checks it against GitHub's published SHA-256 and its code signature. When it's ready, click **Restart to update** (or it's applied the next time Sidebar quits). Because these builds aren't Developer ID signed yet, macOS may ask for microphone and screen-and-audio access again after an update.
