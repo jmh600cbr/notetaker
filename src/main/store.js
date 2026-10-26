@@ -14,6 +14,7 @@ const DEFAULT_SETTINGS = {
   keepAudio: false,
   headphones: true,
   openAtLogin: false,
+  deepgramPerMinute: 0.0063,
   language: 'en',
   acceptedNotice: false,
 };
@@ -22,6 +23,11 @@ const CHOICES = {
   defaultTemplate: ['court', 'client', 'general'],
   language: ['en', 'fr', 'multi'],
 };
+
+// "2026-10" in local time.
+function monthKey(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
 
 function pickKnown(obj) {
   return Object.fromEntries(Object.entries(obj || {}).filter(([k]) => k in DEFAULT_SETTINGS));
@@ -36,6 +42,9 @@ function sanitizeSettings(patch) {
     const expected = typeof DEFAULT_SETTINGS[key];
     if (expected === 'boolean') {
       if (typeof value === 'boolean') out[key] = value;
+    } else if (expected === 'number') {
+      const n = typeof value === 'number' ? value : parseFloat(value);
+      if (Number.isFinite(n) && n >= 0 && n < 1) out[key] = n;
     } else if (typeof value === 'string') {
       const v = value.trim().slice(0, 500);
       if (CHOICES[key] && !CHOICES[key].includes(v)) continue;
@@ -133,6 +142,56 @@ class Store {
     }
     fs.writeFileSync(this.settingsPath, JSON.stringify(onDisk, null, 2), { mode: 0o600 });
     return this.getPublicSettings();
+  }
+
+  // ---- costs ----
+
+  // Adds an estimated cost to a meeting and to the monthly totals.
+  addCost(id, { transcription = 0, ai = 0 }) {
+    if (!transcription && !ai) return null;
+    let meeting = null;
+    try {
+      const m = this.getMeeting(id);
+      const cost = m.cost || { transcription: 0, ai: 0 };
+      meeting = this.updateMeeting(id, {
+        cost: { transcription: cost.transcription + transcription, ai: cost.ai + ai },
+      });
+    } catch {
+      // meeting deleted meanwhile; still count it in the totals
+    }
+    const ledger = this.getCostLedger();
+    const month = monthKey(new Date());
+    const row = ledger[month] || { transcription: 0, ai: 0 };
+    ledger[month] = { transcription: row.transcription + transcription, ai: row.ai + ai };
+    const file = path.join(this.baseDir, 'costs.json');
+    fs.writeFileSync(`${file}.tmp`, JSON.stringify(ledger, null, 2));
+    fs.renameSync(`${file}.tmp`, file);
+    return meeting;
+  }
+
+  getCostLedger() {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(this.baseDir, 'costs.json'), 'utf8'));
+    } catch {
+      return {};
+    }
+  }
+
+  getCostSummary() {
+    const ledger = this.getCostLedger();
+    const now = new Date();
+    const thisMonth = monthKey(now);
+    const last = monthKey(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+    const sum = (rows) =>
+      rows.reduce((t, r) => ({ transcription: t.transcription + (r.transcription || 0), ai: t.ai + (r.ai || 0) }), {
+        transcription: 0,
+        ai: 0,
+      });
+    return {
+      thisMonth: sum([ledger[thisMonth] || {}]),
+      lastMonth: sum([ledger[last] || {}]),
+      allTime: sum(Object.values(ledger)),
+    };
   }
 
   // ---- meetings ----

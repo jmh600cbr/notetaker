@@ -1,7 +1,7 @@
 {
   "name": "sidebar-notes",
   "productName": "Sidebar",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "The AI notetaker that never joins the call. Records and summarizes meetings from the background.",
   "main": "src/main/main.js",
   "author": "Sidebar",
@@ -9,7 +9,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "check": "node --check src/main/main.js && node --check src/main/store.js && node --check src/main/transcribe.js && node --check src/main/summarize.js && node --check src/main/updater.js && node --check src/main/version.js && node --check src/preload.js && node --check src/renderer/app.js && node --check src/renderer/recorder.js",
+    "check": "node --check src/main/main.js && node --check src/main/store.js && node --check src/main/transcribe.js && node --check src/main/summarize.js && node --check src/main/updater.js && node --check src/main/pricing.js && node --check src/main/version.js && node --check src/preload.js && node --check src/renderer/app.js && node --check src/renderer/recorder.js",
     "test": "node --test",
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac",

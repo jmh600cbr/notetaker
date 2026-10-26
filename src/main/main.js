@@ -22,6 +22,7 @@ const { Store, sanitizeSettings } = require('./store');
 const { transcribeMeeting } = require('./transcribe');
 const { summarize, answerQuestion, identifySpeakers, formatTranscript } = require('./summarize');
 const { Updater } = require('./updater');
+const { claudeCost, deepgramCost } = require('./pricing');
 
 // Must run before the app is ready: enables capturing the computer's audio
 // output (what you hear from Zoom/Teams/Meet) without a virtual audio driver.
@@ -233,6 +234,7 @@ async function processMeeting(id) {
   if (processing.has(id)) return;
   processing.add(id);
   const settings = store.getSettings();
+  const onUsage = (usage) => store.addCost(id, { ai: claudeCost(usage) });
   try {
     let meeting = store.getMeeting(id);
     let segments = store.getTranscript(id);
@@ -253,6 +255,7 @@ async function processMeeting(id) {
       });
       segments = result.segments;
       store.saveTranscript(id, segments);
+      store.addCost(id, { transcription: deepgramCost(result.billedSeconds, settings.deepgramPerMinute) });
 
       // If far less audio reached the file than the time spent recording,
       // capture failed somewhere. Say so, and keep the audio for checking.
@@ -285,7 +288,7 @@ async function processMeeting(id) {
       // Put names to voices. Nice to have, so a failure here never blocks the notes.
       broadcastMeeting(store.updateMeeting(id, { status: 'identifying' }));
       try {
-        const names = await identifySpeakers({ apiKey: settings.anthropicApiKey, meeting, segments });
+        const names = await identifySpeakers({ apiKey: settings.anthropicApiKey, meeting, segments, onUsage });
         // The user may have renamed speakers while we waited; their names win.
         const current = store.getMeeting(id).speakers || {};
         const speakers = { ...current };
@@ -301,7 +304,7 @@ async function processMeeting(id) {
     broadcastMeeting(store.updateMeeting(id, { status: 'summarizing', error: null }));
     // Re-read so speaker names and note style edited during processing are used.
     meeting = store.getMeeting(id);
-    const summary = await summarize({ apiKey: settings.anthropicApiKey, meeting, segments });
+    const summary = await summarize({ apiKey: settings.anthropicApiKey, meeting, segments, onUsage });
     meeting = store.updateMeeting(id, { summary, status: 'ready', error: null });
 
     if (!keepAudio && !meeting.warning) meeting = store.deleteAudio(id);
@@ -350,6 +353,7 @@ function registerIpc() {
     platform: process.platform,
     shortcut: SHORTCUT,
     encrypted: store.canEncrypt(),
+    costs: store.getCostSummary(),
   }));
 
   ipcMain.handle('settings:save', (_e, patch) => {
@@ -486,6 +490,7 @@ function registerIpc() {
       meeting: store.getMeeting(id),
       segments: store.getTranscript(id),
       question: String(question).slice(0, 2000),
+      onUsage: (usage) => broadcastMeeting(store.addCost(id, { ai: claudeCost(usage) }) || store.getMeeting(id)),
     });
   });
 

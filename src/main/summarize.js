@@ -139,7 +139,7 @@ function friendlyError(err) {
   return err;
 }
 
-async function askClaude({ apiKey, meeting, segments, instructions, effort, format }) {
+async function askClaude({ apiKey, meeting, segments, instructions, effort, format, onUsage }) {
   if (!apiKey) throw new Error('Add your Anthropic API key in Settings to create summaries.');
   if (!segments.length) throw new Error('The transcript is empty, so there is nothing to summarize.');
   const client = new Anthropic({ apiKey });
@@ -160,6 +160,7 @@ async function askClaude({ apiKey, meeting, segments, instructions, effort, form
         ],
       })
       .finalMessage();
+    if (onUsage) onUsage(message.usage);
 
     if (message.stop_reason === 'refusal') {
       throw new Error('Claude declined to process this transcript.');
@@ -178,9 +179,9 @@ async function askClaude({ apiKey, meeting, segments, instructions, effort, form
   }
 }
 
-function summarize({ apiKey, meeting, segments }) {
+function summarize({ apiKey, meeting, segments, onUsage }) {
   const template = TEMPLATES[meeting.template] || TEMPLATES.general;
-  return askClaude({ apiKey, meeting, segments, instructions: template.instructions, effort: 'high' });
+  return askClaude({ apiKey, meeting, segments, instructions: template.instructions, effort: 'high', onUsage });
 }
 
 const SPEAKER_SCHEMA = {
@@ -207,7 +208,7 @@ const SPEAKER_SCHEMA = {
 // The bot never joins the call, so there is no participant list. Instead, work
 // out who each voice is from what's said ("Thank you, Your Honour", "Ms. Patel
 // for the respondent"). Returns { speakerKey: name } for confident guesses.
-async function identifySpeakers({ apiKey, meeting, segments }) {
+async function identifySpeakers({ apiKey, meeting, segments, onUsage }) {
   const labels = meeting.speakers || {};
   const hints = (meeting.keyterms || []).length
     ? `\n\nNames the user expected in this meeting: ${meeting.keyterms.join(', ')}.`
@@ -219,6 +220,7 @@ For each other label give a short name and/or role. Use "high" confidence only w
     apiKey,
     meeting,
     segments,
+    onUsage,
     instructions,
     effort: 'medium',
     format: { type: 'json_schema', schema: SPEAKER_SCHEMA },
@@ -233,9 +235,9 @@ For each other label give a short name and/or role. Use "high" confidence only w
   return names;
 }
 
-function answerQuestion({ apiKey, meeting, segments, question }) {
+function answerQuestion({ apiKey, meeting, segments, question, onUsage }) {
   const instructions = `Answer this question about the meeting. Be direct, cite timestamps, and say plainly if the transcript does not answer it.\n\nQuestion: ${question}`;
-  return askClaude({ apiKey, meeting, segments, instructions, effort: 'medium' });
+  return askClaude({ apiKey, meeting, segments, instructions, effort: 'medium', onUsage });
 }
 
 module.exports = { summarize, answerQuestion, identifySpeakers, formatTranscript, formatTimestamp, transcriptBlock, TEMPLATES };

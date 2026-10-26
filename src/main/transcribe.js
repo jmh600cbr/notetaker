@@ -137,7 +137,7 @@ async function requestDeepgram(url, audio, { apiKey, fetchImpl }) {
 async function transcribePart(file, opts, { part, offset }) {
   const multichannel = Boolean(opts.headphones);
   const audio = await fs.promises.readFile(file);
-  if (audio.length < 1000) return { segments: [], duration: 0 };
+  if (audio.length < 1000) return { segments: [], duration: 0, billedSeconds: 0 };
 
   let keyterms = opts.keyterms;
   let json;
@@ -159,9 +159,12 @@ async function transcribePart(file, opts, { part, offset }) {
       throw err;
     }
   }
+  const duration = (json.metadata && json.metadata.duration) || 0;
+  const channels = multichannel ? (json.metadata && json.metadata.channels) || 2 : 1;
   return {
     segments: parseDeepgram(json, { multichannel, part, offset }),
-    duration: (json.metadata && json.metadata.duration) || 0,
+    duration,
+    billedSeconds: duration * channels,
   };
 }
 
@@ -171,16 +174,19 @@ async function transcribeMeeting(files, opts) {
   if (!files.length) throw new Error('No audio was captured for this meeting.');
   const multichannel = Boolean(opts.headphones);
   let offset = 0;
+  let billedSeconds = 0;
   const segments = [];
   for (let part = 0; part < files.length; part++) {
     const result = await transcribePart(files[part], opts, { part, offset });
     segments.push(...result.segments);
     offset += result.duration;
+    billedSeconds += result.billedSeconds;
   }
   return {
     segments,
     speakers: defaultSpeakerNames(segments, { multichannel }),
     durationSec: Math.round(offset),
+    billedSeconds,
   };
 }
 

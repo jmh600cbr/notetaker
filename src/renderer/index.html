@@ -88,6 +88,16 @@
         </section>
 
         <section>
+          <h3>Usage &amp; cost</h3>
+          <div class="cost-grid" id="costSummary"></div>
+          <label class="field">
+            <span>Transcription price per audio minute (US$) <small>Deepgram Nova-3 with speaker detection, pay-as-you-go. Change it if your plan differs.</small></span>
+            <input name="deepgramPerMinute" type="number" step="0.0001" min="0" max="0.99" />
+          </label>
+          <p class="hint">Estimates from list prices (summaries use Claude Opus 5.5 at US$4 / US$20 per million input / output tokens). For exact amounts, check your <a href="#" data-link="https://console.deepgram.com/">Deepgram</a> and <a href="#" data-link="https://console.anthropic.com/settings/billing">Anthropic</a> billing pages.</p>
+        </section>
+
+        <section>
           <h3>About</h3>
           <div class="row about-row">
             <span>Sidebar <span id="appVersion"></span></span>
