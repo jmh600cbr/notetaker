@@ -42,6 +42,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font-size: 14px; }
 button, input, select { font: inherit; color: inherit; }
 kbd { font-family: inherit; font-size: 12px; padding: 1px 6px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; background: var(--panel); }
@@ -224,3 +225,40 @@ h1 { font-size: 30px; margin: 12px 0 6px; letter-spacing: -0.4px; }
 .cost-row strong { font-size: 18px; font-variant-numeric: tabular-nums; }
 .cost-row small { font-size: 11px; }
 .dialog .hint a { color: var(--accent-text); }
+
+/* ---------- v0.2: matters, marks, time entries, saving, lock ---------- */
+.field textarea { border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; background: var(--bg); outline: none; font: inherit; font-weight: normal; resize: vertical; color: inherit; }
+.field textarea:focus { border-color: var(--accent); }
+.path-row { flex-wrap: nowrap; }
+.path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: normal; color: var(--muted); font-size: 13px; }
+#lockSettings .row input { flex: 1; min-width: 120px; border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; background: var(--bg); }
+
+.upcoming { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; margin-bottom: 16px; display: flex; flex-direction: column; gap: 6px; }
+.upcoming-row { display: flex; align-items: center; gap: 10px; }
+.upcoming-row .when { color: var(--muted); font-variant-numeric: tabular-nums; width: 70px; font-size: 13px; }
+.upcoming-row .what { flex: 1; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.matter-row { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 13px; color: var(--muted); }
+.matter-row input { border: 1px solid transparent; background: none; border-radius: 6px; padding: 2px 6px; color: var(--text); min-width: 240px; outline: none; }
+.matter-row input:hover { border-color: var(--line); }
+.matter-row input:focus { border-color: var(--accent); background: var(--panel); }
+
+.time-entry { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 10px; padding: 10px 14px; margin-bottom: 14px; line-height: 1.45; }
+
+.marks { max-width: 460px; margin: 10px auto 0; display: flex; flex-direction: column; gap: 6px; text-align: left; }
+.mark-row { display: flex; align-items: center; gap: 10px; }
+.mark-row .ts { color: var(--accent-text); font-weight: 600; width: 70px; }
+.mark-row input { flex: 1; border: 1px solid var(--line); border-radius: 7px; padding: 6px 9px; background: var(--panel); outline: none; }
+.line.flagged { background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 6px; }
+.line.flagged .ts { color: var(--accent-text); font-weight: 600; }
+
+.ask-scope { margin-bottom: 14px; max-width: 520px; }
+
+.lock-screen { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: grid; place-items: center; }
+.lock-screen[hidden] { display: none; }
+.lock-card { width: min(340px, 90vw); display: flex; flex-direction: column; gap: 10px; text-align: center; }
+.lock-card img { width: 64px; height: 64px; border-radius: 14px; margin: 0 auto; }
+.lock-card h2 { margin: 6px 0 0; }
+.lock-card input { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--panel); outline: none; text-align: center; }
+.lock-card input:focus { border-color: var(--accent); }
+.lock-error { color: #c03a3a; min-height: 1.2em; margin: 0; font-size: 13px; }

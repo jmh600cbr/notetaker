@@ -17,12 +17,37 @@ const DEFAULT_SETTINGS = {
   deepgramPerMinute: 0.0063,
   language: 'en',
   acceptedNotice: false,
+  // Auto-save finished notes to a folder (e.g. inside OneDrive).
+  saveFolder: '',
+  saveFormat: 'docx',
+  docHeader: '',
+  docLogo: '',
+  // Outlook calendar (Microsoft 365 app registration).
+  calendarClientId: '',
+  calendarTenant: 'organizations',
+  calendarReminders: true,
+  // Privacy.
+  lockAfterMinutes: 15,
+  retentionDays: 0,
+  retentionScope: 'recordings',
 };
 
 const CHOICES = {
   defaultTemplate: ['court', 'client', 'general'],
   language: ['en', 'fr', 'multi'],
+  saveFormat: ['docx', 'md', 'both'],
+  retentionScope: ['recordings', 'everything'],
 };
+
+const NUMBER_RANGES = {
+  deepgramPerMinute: [0, 1],
+  lockAfterMinutes: [1, 1440],
+  retentionDays: [0, 3650],
+};
+
+// Folders and files are only ever chosen through a file dialog in the main
+// process, never set directly from the window.
+const PATH_SETTINGS = ['saveFolder', 'docLogo'];
 
 // "2026-10" in local time.
 function monthKey(d) {
@@ -44,9 +69,10 @@ function sanitizeSettings(patch) {
       if (typeof value === 'boolean') out[key] = value;
     } else if (expected === 'number') {
       const n = typeof value === 'number' ? value : parseFloat(value);
-      if (Number.isFinite(n) && n >= 0 && n < 1) out[key] = n;
+      const [min, max] = NUMBER_RANGES[key] || [0, Infinity];
+      if (Number.isFinite(n) && n >= min && n <= max) out[key] = n;
     } else if (typeof value === 'string') {
-      const v = value.trim().slice(0, 500);
+      const v = value.trim().slice(0, key === 'docHeader' ? 300 : 500);
       if (CHOICES[key] && !CHOICES[key].includes(v)) continue;
       out[key] = v;
     }
@@ -233,7 +259,7 @@ class Store {
     }
   }
 
-  createMeeting({ title, template, keyterms }) {
+  createMeeting({ title, template, keyterms, matter, attendees }) {
     const now = new Date();
     const id = `${now.toISOString().slice(0, 10)}-${crypto.randomBytes(4).toString('hex')}`;
     const meeting = {
@@ -241,6 +267,9 @@ class Store {
       title: title || `Meeting ${now.toLocaleString()}`,
       template: template || 'court',
       keyterms: keyterms || [],
+      matter: matter || '',
+      attendees: attendees || [],
+      marks: [],
       createdAt: now.toISOString(),
       durationSec: 0,
       status: 'recording',
@@ -309,6 +338,13 @@ class Store {
     });
   }
 
+  // Matters used so far, most recent first.
+  listMatters() {
+    const seen = new Set();
+    for (const m of this.listMeetings()) if (m.matter) seen.add(m.matter);
+    return [...seen];
+  }
+
   deleteMeeting(id) {
     fs.rmSync(this.meetingDir(id), { recursive: true, force: true });
   }
@@ -326,6 +362,10 @@ class Store {
     const file = path.join(this.meetingDir(id), 'transcript.json');
     fs.writeFileSync(`${file}.tmp`, JSON.stringify(segments, null, 2));
     fs.renameSync(`${file}.tmp`, file);
+  }
+
+  deleteTranscript(id) {
+    fs.rmSync(path.join(this.meetingDir(id), 'transcript.json'), { force: true });
   }
 
   hasTranscript(id) {
@@ -354,4 +394,4 @@ class Store {
   }
 }
 
-module.exports = { Store, DEFAULT_SETTINGS, sanitizeSettings };
+module.exports = { Store, DEFAULT_SETTINGS, sanitizeSettings, PATH_SETTINGS };

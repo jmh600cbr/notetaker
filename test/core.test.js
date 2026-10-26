@@ -171,3 +171,75 @@ test('cost estimates', () => {
   assert.equal(store.saveSettings({ deepgramPerMinute: 'abc' }).deepgramPerMinute, 0.0043);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('picks the calendar meeting that is on now', () => {
+  const { pickEvent, attendeeNames } = require('../src/main/calendar');
+  const now = new Date('2026-10-26T14:05:00Z');
+  const ev = (id, start, end, extra = {}) => ({ id, start: { dateTime: start }, end: { dateTime: end }, ...extra });
+  const events = [
+    ev('focus', '2026-10-26T13:00:00.0000000', '2026-10-26T17:00:00.0000000'),
+    ev('hearing', '2026-10-26T14:00:00.0000000', '2026-10-26T15:00:00.0000000', { isOnlineMeeting: true }),
+    ev('later', '2026-10-26T16:00:00.0000000', '2026-10-26T17:00:00.0000000', { isOnlineMeeting: true }),
+    ev('cancelled', '2026-10-26T14:00:00.0000000', '2026-10-26T15:00:00.0000000', { isCancelled: true, isOnlineMeeting: true }),
+  ];
+  assert.equal(pickEvent(events, now).id, 'hearing');
+  // starting in 8 minutes still counts; in an hour doesn't
+  assert.equal(pickEvent([ev('soon', '2026-10-26T14:13:00.0000000', '2026-10-26T15:00:00.0000000')], now).id, 'soon');
+  assert.equal(pickEvent([events[2]], now), null);
+  const names = attendeeNames({
+    organizer: { emailAddress: { name: 'Justice Okafor' } },
+    attendees: [{ emailAddress: { name: 'Priya Patel' } }, { emailAddress: { name: 'room-12@court.ca' } }, { emailAddress: { name: 'Priya Patel' } }],
+  });
+  assert.deepEqual(names, ['Justice Okafor', 'Priya Patel']);
+});
+
+test('app lock checks the password and blocks repeated guesses', () => {
+  const { AppLock } = require('../src/main/lock');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sidebar-'));
+  const lock = new AppLock(dir);
+  assert.equal(lock.enabled(), false);
+  assert.throws(() => lock.setPassword('123'));
+  lock.setPassword('correct horse');
+  assert.equal(lock.lock(), true);
+  assert.equal(lock.unlock('wrong'), false);
+  assert.equal(lock.locked, true);
+  assert.equal(lock.unlock('correct horse'), true);
+  assert.equal(lock.locked, false);
+  assert.ok(!fs.readFileSync(path.join(dir, 'lock.json'), 'utf8').includes('correct horse'));
+  for (let i = 0; i < 5; i++) lock.unlock('nope');
+  assert.throws(() => lock.unlock('correct horse'), /Too many attempts/);
+  assert.equal(new AppLock(dir).locked, true, 'starts locked when enabled');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('time entries bill in 6-minute increments, rounded up', () => {
+  const { billableHours } = require('../src/main/summarize');
+  assert.equal(billableHours(0), 0.1);
+  assert.equal(billableHours(360), 0.1);
+  assert.equal(billableHours(361), 0.2);
+  assert.equal(billableHours(2460), 0.7);
+});
+
+test('settings validate numbers and never accept file paths from the window', () => {
+  const { sanitizeSettings, PATH_SETTINGS } = require('../src/main/store');
+  assert.deepEqual(sanitizeSettings({ retentionDays: '90', lockAfterMinutes: '0', saveFormat: 'pdf', retentionScope: 'everything' }), {
+    retentionDays: 90,
+    retentionScope: 'everything',
+  });
+  assert.deepEqual(PATH_SETTINGS.sort(), ['docLogo', 'saveFolder']);
+});
+
+test('Word export produces a document with the notes and transcript', async () => {
+  const { buildDocx } = require('../src/main/docx');
+  const buf = await buildDocx({
+    meeting: { title: 'Motion', createdAt: new Date().toISOString(), durationSec: 600, summary: '## Overview\n- [ ] Serve claim <b>now</b>', speakers: { 0: 'Judge' }, matter: 'Smith' },
+    segments: [{ start: 1, end: 2, speaker: '0', text: 'Granted.' }],
+    headerText: 'Example LLP',
+  });
+  assert.equal(buf.slice(0, 2).toString(), 'PK');
+  // jszip comes with the docx library
+  const xml = await (await require('jszip').loadAsync(buf)).file('word/document.xml').async('string');
+  assert.match(xml, /Serve claim/);
+  assert.match(xml, /Granted\./);
+  assert.doesNotMatch(xml, /&lt;b&gt;/);
+});

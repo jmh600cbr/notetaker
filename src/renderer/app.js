@@ -22,7 +22,12 @@ const state = {
   recordingId: null,
   tick: null,
   askHistory: {},
-  draft: { title: '', template: null, keyterms: '' },
+  askScope: 'meeting', // or 'matter'
+  draft: { title: '', template: null, keyterms: '', matter: '' },
+  matters: [],
+  matterFilter: '',
+  searchIds: null, // ids matching the search box, or null for no search
+  upcoming: [],
 };
 
 // ---------- helpers ----------
@@ -80,6 +85,10 @@ function shortDate(iso) {
     ' · ' + d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
+function markShortcutLabel() {
+  return state.settings && state.settings.platform === 'darwin' ? '⌥⇧⌘M' : 'Ctrl+Alt+Shift+M';
+}
+
 function shortcutLabel() {
   return state.settings && state.settings.platform === 'darwin' ? '⌥⇧⌘R' : 'Ctrl+Alt+Shift+R';
 }
@@ -108,8 +117,14 @@ function toast(message) {
 
 function renderList() {
   const list = $('#meetingList');
-  const q = state.search.toLowerCase();
-  const items = state.meetings.filter((m) => !q || m.title.toLowerCase().includes(q) || (m.summary || '').toLowerCase().includes(q));
+  const items = state.meetings.filter(
+    (m) => (!state.matterFilter || m.matter === state.matterFilter) && (!state.searchIds || state.searchIds.includes(m.id)),
+  );
+  const filter = $('#matterFilter');
+  filter.hidden = !state.matters.length;
+  filter.innerHTML = `<option value="">All matters</option>${state.matters
+    .map((m) => `<option value="${esc(m)}" ${m === state.matterFilter ? 'selected' : ''}>${esc(m)}</option>`)
+    .join('')}`;
   if (!items.length) {
     list.innerHTML = `<li class="empty">${state.meetings.length ? 'No matches' : 'Your notes will appear here'}</li>`;
     return;
@@ -119,7 +134,7 @@ function renderList() {
       <li class="meeting-item ${m.id === state.selectedId ? 'active' : ''}" data-id="${esc(m.id)}" tabindex="0" role="button">
         <div class="meeting-title">${esc(m.title)}</div>
         <div class="meeting-meta">
-          <span>${esc(shortDate(m.createdAt))}</span>
+          <span>${esc(shortDate(m.createdAt))}${m.matter && !state.matterFilter ? ` · ${esc(m.matter)}` : ''}</span>
           ${m.status !== 'ready' ? `<span class="chip ${esc(m.status)}">${esc(STATUS_LABELS[m.status] || m.status)}</span>` : ''}
         </div>
       </li>`)
@@ -138,8 +153,20 @@ $('#meetingList').addEventListener('keydown', (e) => {
   }
 });
 
+// Searches titles, matters, notes and full transcripts (in the main process).
+let searchTimer;
 $('#search').addEventListener('input', (e) => {
   state.search = e.target.value;
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(async () => {
+    const q = state.search.trim();
+    state.searchIds = q ? await api.searchMeetings(q) : null;
+    renderList();
+  }, 200);
+});
+
+$('#matterFilter').addEventListener('change', (e) => {
+  state.matterFilter = e.target.value;
   renderList();
 });
 
@@ -172,11 +199,26 @@ function renderStart() {
         </div>` : ''}
       <h1>Ready when you are.</h1>
       <p class="lede">Sidebar listens on your computer, not in the meeting. No bot joins, so it works for court hearings and any call where bots aren't allowed.</p>
+      ${state.upcoming.length ? `
+        <div class="upcoming">
+          <span class="hint">From your Outlook calendar</span>
+          ${state.upcoming.map((e) => `
+            <div class="upcoming-row">
+              <span class="when">${esc(new Date(e.start).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }))}</span>
+              <span class="what">${esc(e.subject)}</span>
+              <button class="btn ghost small" data-event="${esc(e.subject)}">Record</button>
+            </div>`).join('')}
+        </div>` : ''}
 
       <div class="card form">
         <label class="field">
           <span>What's this for?</span>
           <input id="titleInput" placeholder="e.g. Smith v. Jones, motion hearing" value="${esc(state.draft.title)}" />
+        </label>
+        <label class="field">
+          <span>Matter <small>(optional: groups meetings and their saved notes)</small></span>
+          <input id="matterInput" list="matterList" placeholder="e.g. Smith v. Jones (2026-123)" value="${esc(state.draft.matter)}" />
+          <datalist id="matterList">${state.matters.map((m) => `<option value="${esc(m)}"></option>`).join('')}</datalist>
         </label>
         <div class="field">
           <span>Note style</span>
@@ -201,6 +243,13 @@ function renderStart() {
 
   $('#titleInput').addEventListener('input', (e) => (state.draft.title = e.target.value));
   $('#keytermsInput').addEventListener('input', (e) => (state.draft.keyterms = e.target.value));
+  $('#matterInput').addEventListener('input', (e) => (state.draft.matter = e.target.value));
+  $('#view').querySelectorAll('[data-event]').forEach((b) =>
+    b.addEventListener('click', () => {
+      state.draft.title = b.dataset.event;
+      exclusive(() => startRecording());
+    }),
+  );
   $('#templatePicker').addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;
@@ -243,11 +292,27 @@ function renderRecording() {
       </div>
       <div class="rec-actions">
         <button class="btn ghost" id="pauseBtn">${paused ? 'Resume' : 'Pause'}</button>
+        <button class="btn ghost" id="markBtn" title="Flag this moment as important">⚑ Mark moment</button>
         <button class="btn stop" id="stopBtn">Stop &amp; make notes</button>
       </div>
       <button class="link danger" id="discardBtn">Discard recording</button>
-      <p class="hint center">You can close this window. Sidebar keeps recording in the ${state.settings.platform === 'darwin' ? 'menu bar' : 'system tray'}. Press <kbd>${shortcutLabel()}</kbd> to stop.</p>
+      ${(state.marks || []).length ? `
+        <div class="marks">
+          ${state.marks.map((m, i) => `
+            <div class="mark-row">
+              <span class="ts">⚑ ${clock(m.t)}</span>
+              <input data-mark="${i}" value="${esc(m.label)}" placeholder="What happened? (optional)" />
+            </div>`).join('')}
+        </div>` : ''}
+      <p class="hint center">You can close this window. Sidebar keeps recording in the ${state.settings.platform === 'darwin' ? 'menu bar' : 'system tray'}. Press <kbd>${shortcutLabel()}</kbd> to stop, <kbd>${markShortcutLabel()}</kbd> to mark a moment.</p>
     </div>`;
+  $('#markBtn').addEventListener('click', () => markMoment());
+  $('#view').querySelectorAll('[data-mark]').forEach((input) =>
+    input.addEventListener('change', () => {
+      state.marks[Number(input.dataset.mark)].label = input.value.trim();
+      api.updateMeeting(state.recordingId, { marks: state.marks });
+    }),
+  );
   $('#pauseBtn').addEventListener('click', () => {
     if (r.state === 'paused') r.resume();
     else r.pause();
@@ -277,6 +342,11 @@ function renderMeeting() {
             ${meetingCost(meeting) ? `· <span title="Estimated: transcription ${esc(money(meeting.cost.transcription))}, AI notes &amp; questions ${esc(money(meeting.cost.ai))}">≈ ${esc(money(meetingCost(meeting)))}</span>` : ''}
             ${meeting.status !== 'ready' ? `<span class="chip ${esc(meeting.status)}">${esc(STATUS_LABELS[meeting.status])}</span>` : ''}
           </div>
+          <div class="matter-row">
+            <span>Matter</span>
+            <input id="matterEdit" list="matterEditList" value="${esc(meeting.matter || '')}" placeholder="None" />
+            <datalist id="matterEditList">${state.matters.map((m) => `<option value="${esc(m)}"></option>`).join('')}</datalist>
+          </div>
         </div>
         <div class="actions">
           <button class="btn ghost" id="copyBtn" ${busy ? 'disabled' : ''}>Copy</button>
@@ -287,6 +357,12 @@ function renderMeeting() {
 
       ${meeting.warning ? `
         <div class="callout warn"><div><strong>Check these notes.</strong> ${esc(meeting.warning)}</div></div>` : ''}
+
+      ${meeting.saveError ? `
+        <div class="callout warn">
+          <div><strong>Not saved to your notes folder.</strong> ${esc(meeting.saveError)}</div>
+          <button class="btn ghost" id="saveAgainBtn">Save again</button>
+        </div>` : ''}
 
       ${meeting.status === 'error' ? `
         <div class="callout error">
@@ -322,6 +398,13 @@ function renderMeeting() {
     state.tab = b.dataset.tab;
     renderMeeting();
   });
+  $('#matterEdit').addEventListener('change', async (e) => {
+    await api.updateMeeting(meeting.id, { matter: e.target.value });
+    state.matters = await api.listMatters();
+    toast(e.target.value.trim() ? `Filed under ${e.target.value.trim()}` : 'Removed from matter');
+  });
+  const saveAgain = $('#saveAgainBtn');
+  if (saveAgain) saveAgain.addEventListener('click', () => api.saveToFolder(meeting.id));
   $('#titleEdit').addEventListener('change', async (e) => {
     const title = e.target.value.trim() || meeting.title;
     await api.updateMeeting(meeting.id, { title });
@@ -359,34 +442,62 @@ function renderMeeting() {
 function renderNotes(meeting, busy) {
   const body = $('#tabBody');
   const hasTranscript = state.detail && state.detail.transcript.length > 0;
+  const te = meeting.timeEntry;
+  const timeEntry = te && te.description ? `
+    <div class="time-entry">
+      <div><span class="hint">Time entry</span><div><strong>${esc(te.hours.toFixed(1))} h</strong> — ${esc(te.description)}</div></div>
+      <button class="btn ghost small" id="copyTimeBtn">Copy</button>
+    </div>` : '';
   const notes = meeting.summary
     ? `<article class="notes">${markdown(meeting.summary)}</article>`
     : `<div class="empty-state">${busy ? 'Your notes will appear here.' : 'No notes yet.'}</div>`;
-  if (!meeting.summary && !hasTranscript) {
-    body.innerHTML = notes;
-    return;
-  }
-  body.innerHTML = `
-    ${notes}
+  const saved = (meeting.savedFiles || []).length
+    ? `<span class="hint">Saved to your notes folder${meeting.matter ? ` (${esc(meeting.matter)})` : ''}.</span>` : '';
+  const footer = hasTranscript ? `
     <div class="notes-footer">
-      <span class="hint">${meeting.summary ? 'AI-generated. Check important details against the transcript.' : ''}</span>
+      <span class="hint">${meeting.summary ? 'AI-generated. Check important details against the transcript.' : ''} ${saved}</span>
       <div class="row">
         <select id="templateSwitch" aria-label="Note style">${Object.entries(TEMPLATE_LABELS).map(([k, v]) => `<option value="${k}" ${k === meeting.template ? 'selected' : ''}>${v}</option>`).join('')}</select>
         <button class="btn ghost" id="regenBtn" ${busy ? 'disabled' : ''}>${meeting.summary ? 'Regenerate notes' : 'Make notes'}</button>
       </div>
-    </div>`;
-  $('#regenBtn').addEventListener('click', async () => {
-    await api.updateMeeting(meeting.id, { template: $('#templateSwitch').value });
-    await api.resummarize(meeting.id);
-  });
+    </div>` : meeting.transcriptDeleted ? `
+    <div class="notes-footer"><span class="hint">The audio and transcript were deleted automatically, as set in Settings → Privacy. ${saved}</span></div>` : '';
+  body.innerHTML = `${timeEntry}${notes}${footer}`;
+  const copyTime = $('#copyTimeBtn');
+  if (copyTime) {
+    copyTime.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(`${te.hours.toFixed(1)} h — ${te.description}`);
+      toast('Time entry copied');
+    });
+  }
+  const regen = $('#regenBtn');
+  if (regen) {
+    regen.addEventListener('click', async () => {
+      await api.updateMeeting(meeting.id, { template: $('#templateSwitch').value });
+      await api.resummarize(meeting.id);
+    });
+  }
 }
 
 function renderTranscript(meeting, transcript) {
   const body = $('#tabBody');
   if (!transcript.length) {
-    body.innerHTML = '<div class="empty-state">The transcript will appear here once it\'s ready.</div>';
+    body.innerHTML = `<div class="empty-state">${meeting.transcriptDeleted
+      ? 'The transcript was deleted automatically, as set in Settings → Privacy.'
+      : "The transcript will appear here once it's ready."}</div>`;
     return;
   }
+  // The line being spoken when the user flagged a moment (or the one just
+  // before, if the mark fell in a pause).
+  const flagged = new Map();
+  for (const m of meeting.marks || []) {
+    let idx = -1;
+    transcript.forEach((seg, i) => {
+      if (seg.start <= m.t) idx = i;
+    });
+    if (idx >= 0 && !flagged.has(idx)) flagged.set(idx, m);
+  }
+  const flagFor = (seg) => flagged.get(transcript.indexOf(seg));
   const speakers = meeting.speakers || {};
   const keys = [...new Set(transcript.map((s) => s.speaker))];
   body.innerHTML = `
@@ -397,12 +508,15 @@ function renderTranscript(meeting, transcript) {
       </div>
     </div>
     <div class="transcript">
-      ${transcript.map((s) => `
-        <div class="line">
-          <span class="ts">${clock(s.start)}</span>
+      ${transcript.map((s) => {
+        const flag = flagFor(s);
+        return `
+        <div class="line ${flag ? 'flagged' : ''}" ${flag ? `title="Marked at ${clock(flag.t)}${flag.label ? `: ${esc(flag.label)}` : ''}"` : ''}>
+          <span class="ts">${flag ? '⚑ ' : ''}${clock(s.start)}</span>
           <span class="who c${keys.indexOf(s.speaker) % 6}">${esc(speakers[s.speaker] || `Speaker ${s.speaker}`)}</span>
           <p>${esc(s.text)}</p>
-        </div>`).join('')}
+        </div>`;
+      }).join('')}
     </div>`;
   body.querySelector('.speaker-fields').addEventListener('change', async (e) => {
     const input = e.target.closest('input');
@@ -415,36 +529,46 @@ function renderTranscript(meeting, transcript) {
 
 function renderAsk(meeting, transcript) {
   const body = $('#tabBody');
-  const history = state.askHistory[meeting.id] || [];
+  const matterScope = state.askScope === 'matter' && meeting.matter;
+  const historyKey = matterScope ? `matter:${meeting.matter}` : meeting.id;
+  const history = state.askHistory[historyKey] || [];
   const typing = $('#askInput') ? $('#askInput').value : '';
-  if (!transcript.length) {
+  if (!transcript.length && !matterScope && !meeting.matter) {
     body.innerHTML = '<div class="empty-state">You can ask questions once the transcript is ready.</div>';
     return;
   }
+  const scope = meeting.matter ? `
+    <div class="segmented ask-scope" id="askScope">
+      <button type="button" data-scope="meeting" class="${matterScope ? '' : 'on'}">This meeting</button>
+      <button type="button" data-scope="matter" class="${matterScope ? 'on' : ''}">All of ${esc(meeting.matter)}</button>
+    </div>` : '';
   body.innerHTML = `
+    ${scope}
     <div class="ask">
       <div class="ask-log">
         ${history.length ? history.map((h) => `
           <div class="q">${esc(h.q)}</div>
           <div class="a ${h.pending ? 'pending' : ''}">${h.pending ? 'Thinking…' : markdown(h.a)}</div>`).join('') : `
           <div class="suggestions">
-            ${['What did the judge order?', 'What deadlines were set?', 'What did opposing counsel concede?', 'What do I need to do next?']
+            ${(matterScope
+              ? ['Summarize the history of this matter', 'What deadlines are still open?', "How has the court's view changed?", 'What has opposing counsel conceded so far?']
+              : ['What did the judge order?', 'What deadlines were set?', 'What did opposing counsel concede?', 'What do I need to do next?'])
               .map((q) => `<button class="btn ghost small" data-q="${esc(q)}">${esc(q)}</button>`).join('')}
           </div>`}
       </div>
       <form class="ask-form" id="askForm">
-        <input id="askInput" placeholder="Ask anything about this meeting…" autocomplete="off" />
+        <input id="askInput" placeholder="${matterScope ? 'Ask about every meeting in this matter…' : 'Ask anything about this meeting…'}" autocomplete="off" />
         <button class="btn primary">Ask</button>
       </form>
     </div>`;
   const ask = async (q) => {
     if (!q.trim()) return;
     const entry = { q, a: '', pending: true };
-    state.askHistory[meeting.id] = [...(state.askHistory[meeting.id] || []), entry];
+    state.askHistory[historyKey] = [...(state.askHistory[historyKey] || []), entry];
     if ($('#askInput')) $('#askInput').value = '';
     renderAsk(meeting, transcript);
     try {
-      entry.a = await api.ask(meeting.id, q);
+      entry.a = matterScope ? await api.askMatter(meeting.id, q) : await api.ask(meeting.id, q);
     } catch (err) {
       entry.a = `**Couldn't answer:** ${cleanError(err)}`;
     }
@@ -456,6 +580,12 @@ function renderAsk(meeting, transcript) {
     ask($('#askInput').value);
   });
   body.querySelectorAll('[data-q]').forEach((b) => b.addEventListener('click', () => ask(b.dataset.q)));
+  body.querySelectorAll('[data-scope]').forEach((b) =>
+    b.addEventListener('click', () => {
+      state.askScope = b.dataset.scope;
+      renderAsk(meeting, transcript);
+    }),
+  );
   $('#askInput').value = typing;
   $('#askInput').focus();
 }
@@ -494,7 +624,7 @@ async function startRecording() {
 
   // Use what's typed on the start screen only if that's what's showing, so an
   // old draft never ends up on a different meeting started from the shortcut.
-  const draft = state.selectedId === null ? state.draft : { title: '', template: null, keyterms: '' };
+  const draft = state.selectedId === null ? state.draft : { title: '', template: null, keyterms: '', matter: '' };
   let meeting;
   let recorder;
   try {
@@ -502,6 +632,7 @@ async function startRecording() {
       title: draft.title.trim(),
       template: draft.template || state.settings.defaultTemplate,
       keyterms: draft.keyterms.split(',').map((t) => t.trim()).filter(Boolean),
+      matter: draft.matter || '',
     });
     state.recordingId = meeting.id;
     recorder = new Recorder({
@@ -518,11 +649,12 @@ async function startRecording() {
     return;
   }
   state.recorder = recorder;
+  state.marks = [];
   state.recordingTitle = meeting.title;
   state.diskError = null;
   state.reconnectedAt = null;
   state.selectedId = null;
-  state.draft = { title: '', template: null, keyterms: '' };
+  state.draft = { title: '', template: null, keyterms: '', matter: '' };
   api.recordingInfo({ started: true, systemAudio: recorder.systemAudio, micAudio: recorder.micAudio });
   renderUpdate();
   render();
@@ -593,6 +725,20 @@ window.sidebarStopForQuit = () =>
     await api.stopRecording(id, seconds, { quitting: true, unsaved });
   });
 
+// Flags the current moment (button or global shortcut).
+async function markMoment() {
+  const r = state.recorder;
+  if (!r || !state.recordingId) return;
+  const t = r.elapsedSeconds();
+  state.marks = [...(state.marks || []), { t, label: '' }];
+  await api.markMoment(state.recordingId, t);
+  toast(`Moment marked at ${clock(t)}`);
+  renderRecording();
+  const inputs = $('#view').querySelectorAll('[data-mark]');
+  if (inputs.length && !document.hidden) inputs[inputs.length - 1].focus();
+}
+window.sidebarMark = markMoment;
+
 // Called after the computer wakes from sleep.
 window.sidebarCheckRecording = () => {
   if (state.recorder) state.recorder.checkHealth();
@@ -601,14 +747,35 @@ window.sidebarCheckRecording = () => {
 // ---------- data ----------
 
 async function refreshMeetings() {
-  state.meetings = await api.listMeetings();
+  if (state.settings.locked) return;
+  try {
+    state.meetings = await api.listMeetings();
+    state.matters = await api.listMatters();
+  } catch {
+    return; // locked meanwhile
+  }
   renderList();
 }
 
+api.onMeetingsRefresh(async () => {
+  await refreshMeetings();
+  if (state.selectedId && !state.meetings.find((m) => m.id === state.selectedId)) {
+    state.selectedId = null;
+    state.detail = null;
+  }
+  if (!state.recorder) render();
+});
+
 async function openMeeting(id) {
-  if (state.recorder) return;
+  if (state.recorder || state.settings.locked) return;
+  let detail;
+  try {
+    detail = await api.getMeeting(id);
+  } catch {
+    return; // deleted, or Sidebar was locked meanwhile
+  }
   state.selectedId = id;
-  state.detail = await api.getMeeting(id);
+  state.detail = detail;
   if (state.detail.meeting.status !== 'ready' && state.tab === 'ask') state.tab = 'notes';
   await refreshMeetings();
   render();
@@ -639,6 +806,13 @@ function rerenderMeeting() {
 }
 
 api.onMeetingUpdated(async (meeting) => {
+  // e.g. the title filled in from the calendar while recording
+  if (meeting.id === state.recordingId && state.recorder) {
+    state.recordingTitle = meeting.title;
+    const t = $('.rec-title');
+    if (t) t.textContent = meeting.title;
+  }
+  if (state.settings.locked) return;
   await refreshMeetings();
   if (meeting.id !== state.selectedId || state.recorder) return;
   const detail = await api.getMeeting(meeting.id);
@@ -672,7 +846,181 @@ function fillSettingsForm() {
   $('#encryptionHint').textContent = s.encrypted
     ? 'Keys are stored encrypted on this computer.'
     : 'Keys are stored on this computer.';
+  $('#saveFolderPath').textContent = s.saveFolder || 'Not set';
+  $('#saveFolderPath').title = s.saveFolder || '';
+  $('#docLogoPath').textContent = s.docLogo ? s.docLogo.split(/[\\/]/).pop() : 'None';
+  renderLockSettings();
+  refreshCalendarStatus();
 }
+
+// ---- notes folder & logo ----
+
+$('#chooseFolderBtn').addEventListener('click', async () => {
+  const saved = await api.chooseSaveFolder();
+  if (saved) {
+    state.settings = { ...state.settings, ...saved };
+    $('#saveFolderPath').textContent = saved.saveFolder;
+    toast('New notes will be saved to this folder');
+  }
+});
+$('#clearFolderBtn').addEventListener('click', async () => {
+  state.settings = { ...state.settings, ...(await api.clearPathSetting('saveFolder')) };
+  $('#saveFolderPath').textContent = 'Not set';
+});
+$('#chooseLogoBtn').addEventListener('click', async () => {
+  const saved = await api.chooseLogo();
+  if (saved) {
+    state.settings = { ...state.settings, ...saved };
+    $('#docLogoPath').textContent = saved.docLogo.split(/[\\/]/).pop();
+  }
+});
+$('#clearLogoBtn').addEventListener('click', async () => {
+  state.settings = { ...state.settings, ...(await api.clearPathSetting('docLogo')) };
+  $('#docLogoPath').textContent = 'None';
+});
+
+// ---- Outlook calendar ----
+
+async function refreshCalendarStatus() {
+  const st = await api.calendarStatus();
+  const btn = $('#calendarBtn');
+  btn.textContent = st.connected ? 'Disconnect' : 'Connect Outlook';
+  btn.disabled = !st.configured && !st.connected;
+  $('#calendarStatus').textContent = st.connected
+    ? `Connected as ${st.account}`
+    : st.configured
+      ? 'Not connected'
+      : 'Enter the app ID, then Save, then Connect.';
+  btn.onclick = async () => {
+    try {
+      if (st.connected) {
+        await api.disconnectCalendar();
+        state.upcoming = [];
+      } else {
+        $('#calendarStatus').textContent = 'Finish signing in in your browser…';
+        await api.connectCalendar();
+        await loadUpcoming();
+        toast('Outlook calendar connected');
+      }
+    } catch (err) {
+      toast(`Couldn't connect: ${cleanError(err)}`);
+    }
+    refreshCalendarStatus();
+  };
+}
+
+async function loadUpcoming() {
+  try {
+    const st = await api.calendarStatus();
+    state.upcoming = st.connected ? await api.upcomingEvents() : [];
+  } catch {
+    state.upcoming = [];
+  }
+  if (!state.recorder && state.selectedId === null) render();
+}
+
+// ---- app lock ----
+
+function renderLockSettings() {
+  const box = $('#lockSettings');
+  const s = state.settings;
+  if (s.lockEnabled) {
+    box.innerHTML = `
+      <span>App lock is on <small>Sidebar asks for your password${s.touchId ? ' or Touch ID' : ''} when it opens and after it's been idle.</small></span>
+      <div class="row">
+        <button type="button" class="btn ghost small" id="lockNowBtn">Lock now</button>
+        <input type="password" id="lockOffPw" placeholder="Current password" />
+        <button type="button" class="btn ghost small" id="lockOffBtn">Turn off</button>
+      </div>`;
+    $('#lockNowBtn').addEventListener('click', () => {
+      $('#settingsDialog').close('cancel');
+      api.lockNow();
+    });
+    $('#lockOffBtn').addEventListener('click', async () => {
+      try {
+        await api.disableLock($('#lockOffPw').value);
+        state.settings.lockEnabled = false;
+        renderLockSettings();
+        toast('App lock turned off');
+      } catch (err) {
+        toast(cleanError(err));
+      }
+    });
+  } else {
+    box.innerHTML = `
+      <span>Lock Sidebar with a password <small>Keeps notes and transcripts private if someone else uses this computer.${s.touchId ? ' You can also unlock with Touch ID.' : ''} If you forget the password, notes can't be opened.</small></span>
+      <div class="row">
+        <input type="password" id="lockPw1" placeholder="New password" autocomplete="new-password" />
+        <input type="password" id="lockPw2" placeholder="Repeat password" autocomplete="new-password" />
+        <button type="button" class="btn ghost small" id="lockOnBtn">Turn on</button>
+      </div>`;
+    $('#lockOnBtn').addEventListener('click', async () => {
+      const a = $('#lockPw1').value;
+      if (a !== $('#lockPw2').value) return toast("The passwords don't match");
+      try {
+        await api.enableLock(a);
+        state.settings.lockEnabled = true;
+        renderLockSettings();
+        toast('App lock is on');
+      } catch (err) {
+        toast(cleanError(err));
+      }
+    });
+  }
+}
+
+function showLockScreen(locked) {
+  const screen = $('#lockScreen');
+  screen.hidden = !locked;
+  $('#lockError').textContent = '';
+  if (locked) {
+    if ($('#settingsDialog').open) $('#settingsDialog').close('cancel');
+    $('#touchIdBtn').hidden = !state.settings.touchId;
+    $('#lockPassword').value = '';
+    $('#lockPassword').focus();
+    // Clear anything private from the page behind the lock.
+    if (!state.recorder) {
+      state.selectedId = null;
+      state.detail = null;
+      state.askHistory = {};
+      state.meetings = [];
+      $('#view').innerHTML = '';
+      $('#meetingList').innerHTML = '';
+    }
+  }
+}
+
+async function afterUnlock() {
+  showLockScreen(false);
+  state.settings = { ...state.settings, ...(await api.getSettings()) };
+  await refreshMeetings();
+  render();
+  startUpcoming();
+}
+
+function startUpcoming() {
+  if (state.upcomingTimer) return;
+  loadUpcoming();
+  state.upcomingTimer = setInterval(loadUpcoming, 5 * 60000);
+}
+
+$('#lockForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  try {
+    if (await api.unlock($('#lockPassword').value)) await afterUnlock();
+    else $('#lockError').textContent = 'That password is incorrect.';
+  } catch (err) {
+    $('#lockError').textContent = cleanError(err);
+  }
+});
+$('#touchIdBtn').addEventListener('click', async () => {
+  if (await api.unlockWithTouchId()) await afterUnlock();
+});
+
+api.onLockChanged((locked) => {
+  state.settings.locked = locked;
+  if (locked) showLockScreen(true);
+});
 
 async function openSettings() {
   // Refresh so the cost totals are current.
@@ -808,6 +1156,12 @@ $('#checkUpdatesBtn').addEventListener('click', async () => {
   state.update = await api.getUpdate();
   renderUpdate();
   document.body.classList.add(`platform-${state.settings.platform}`);
+  if (state.settings.locked) {
+    showLockScreen(true);
+    if (state.settings.touchId) $('#touchIdBtn').click();
+    return;
+  }
   await refreshMeetings();
   render();
+  startUpcoming();
 })();

@@ -35,6 +35,18 @@ Tips:
 
 ![Transcript with speakers](docs/transcript.png)
 
+## More features
+
+- **Matters.** File each meeting under a client or matter (e.g. "Smith v. Jones (2026-123)"). Filter the list by matter, and on the **Ask** tab switch to **All of <matter>** to ask questions across every hearing and call in it ("What deadlines are still open?").
+- **Search** finds words anywhere in titles, notes and full transcripts.
+- **Mark a moment.** Press **⌥⇧⌘M** on Mac or **Ctrl+Alt+Shift+M** on Windows (or click **⚑ Mark moment**) when something important happens. You can add a label while recording. The notes get a "Flagged Moments" section and the transcript highlights the line.
+- **Time entry.** Every meeting gets a ready-to-paste time entry (rounded up to 0.1 h) with one-click Copy.
+- **Word documents and OneDrive.** In **Settings → Saving & Word documents**, choose a folder inside OneDrive or SharePoint, and finished notes are saved there automatically as Word (and/or Markdown), one subfolder per matter. You can add a header (firm name, "Privileged & Confidential") and a logo. **Export** also saves Word.
+- **Outlook calendar.** Recordings are named after the meeting that's on, attendees' names improve the transcript, and Sidebar reminds you to record when a meeting starts. See [Connecting Outlook](#connecting-outlook-admin) below.
+- **App lock.** Require a password (or Touch ID on Mac) to open Sidebar, and lock automatically when the computer is idle, locked or asleep. Recording keeps working while locked.
+- **Auto-delete.** Delete audio and transcripts (keeping the notes), or whole meetings, after 30 days to 2 years.
+- **Cost tracking.** Estimated cost per meeting and monthly totals in Settings.
+
 ## Important: consent and court rules
 
 Sidebar is a recording tool, so the rules on recording apply to it.
@@ -109,6 +121,18 @@ Installed copies check for a new release on launch and every few hours, then sho
 
 - **Windows:** the update downloads in the background and installs on restart.
 - **Mac:** Sidebar downloads the new version in the background and checks it against GitHub's published SHA-256 and its code signature. When it's ready, click **Restart to update** (or it's applied the next time Sidebar quits). Because these builds aren't Developer ID signed yet, macOS may ask for microphone and screen-and-audio access again after an update.
+
+### Connecting Outlook (admin)
+
+Microsoft requires apps that read Outlook calendars to be registered in your organization's Microsoft Entra ID. It takes about five minutes, once, for the whole firm:
+
+1. In the [Microsoft Entra admin center](https://entra.microsoft.com), go to **Applications → App registrations → New registration**. Name it "Sidebar" and choose **Accounts in this organizational directory only**.
+2. Under **Redirect URI**, choose **Public client/native (mobile & desktop)** and enter `http://localhost`.
+3. Open **API permissions → Add a permission → Microsoft Graph → Delegated permissions**, add **Calendars.Read** and **User.Read**, then click **Grant admin consent**.
+4. Copy the **Application (client) ID** and **Directory (tenant) ID** from the app's Overview page.
+5. In Sidebar, open **Settings → Outlook calendar**, paste both, click **Save**, then **Connect Outlook** and sign in. Include them in your exported team setup file so colleagues get them automatically.
+
+Sidebar only reads calendar events (title, time and attendee names). Sign-in tokens are stored encrypted on each computer.
 
 ### Code signing (recommended before sharing widely)
 

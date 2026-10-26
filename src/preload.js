@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld('sidebar', {
   saveSettings: (patch) => invoke('settings:save', patch),
   importSettings: () => invoke('settings:import'),
   exportSettings: () => invoke('settings:export'),
+  chooseSaveFolder: () => invoke('settings:chooseFolder'),
+  chooseLogo: () => invoke('settings:chooseLogo'),
+  clearPathSetting: (key) => invoke('settings:clear', key),
   checkPermissions: () => invoke('permissions:check'),
   openPermissionSettings: (kind) => invoke('permissions:openSettings', kind),
 
@@ -30,11 +33,16 @@ contextBridge.exposeInMainWorld('sidebar', {
   ask: (id, question) => invoke('meetings:ask', id, question),
   exportMeeting: (id) => invoke('meetings:export', id),
   meetingText: (id) => invoke('meetings:copyText', id),
+  askMatter: (id, question) => invoke('meetings:askMatter', id, question),
+  searchMeetings: (query) => invoke('meetings:search', query),
+  listMatters: () => invoke('meetings:matters'),
+  saveToFolder: (id) => invoke('meetings:saveToFolder', id),
 
   startRecording: (opts) => invoke('recording:start', opts),
   sendChunk: (id, part, data) => invoke('recording:chunk', id, part, data),
   stopRecording: (id, durationSec, opts) => invoke('recording:stop', id, durationSec, opts),
   discardRecording: (id) => invoke('recording:discard', id),
+  markMoment: (id, t) => invoke('recording:mark', id, t),
   recordingInfo: (info) => ipcRenderer.send('recording:info', info),
   recordingFault: (fault) => ipcRenderer.send('recording:fault', fault),
 
@@ -43,9 +51,23 @@ contextBridge.exposeInMainWorld('sidebar', {
   installUpdate: () => invoke('updater:install'),
   onUpdateState: (cb) => on('updater:state', cb),
 
+  calendarStatus: () => invoke('calendar:status'),
+  connectCalendar: () => invoke('calendar:connect'),
+  disconnectCalendar: () => invoke('calendar:disconnect'),
+  upcomingEvents: () => invoke('calendar:upcoming'),
+
+  lockStatus: () => invoke('lock:status'),
+  unlock: (password) => invoke('lock:unlock', password),
+  unlockWithTouchId: () => invoke('lock:touchId'),
+  enableLock: (password) => invoke('lock:enable', password),
+  disableLock: (password) => invoke('lock:disable', password),
+  lockNow: () => invoke('lock:lockNow'),
+  onLockChanged: (cb) => on('lock:changed', cb),
+
   openExternal: (url) => invoke('shell:openExternal', url),
   showWindow: () => ipcRenderer.send('window:show'),
 
   onMeetingUpdated: (cb) => on('meetings:updated', cb),
   onOpenMeeting: (cb) => on('meetings:open', cb),
+  onMeetingsRefresh: (cb) => on('meetings:refresh', cb),
 });
