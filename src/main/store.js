@@ -27,6 +27,7 @@ const DEFAULT_SETTINGS = {
   calendarTenant: 'organizations',
   calendarReminders: true,
   // Privacy.
+  claudeAccess: false,
   lockAfterMinutes: 15,
   retentionDays: 0,
   retentionScope: 'recordings',

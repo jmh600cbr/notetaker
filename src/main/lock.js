@@ -1,6 +1,9 @@
 // Optional app lock: notes and transcripts can't be viewed until the user
 // unlocks Sidebar with their Sidebar password (or Touch ID on a Mac).
 // Recording keeps working while locked.
+//
+// While locked, a "locked" marker file tells the Claude extension (which
+// reads Sidebar's data folder directly) not to answer.
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
@@ -14,9 +17,20 @@ function hashPassword(password, salt) {
 class AppLock {
   constructor(baseDir) {
     this.file = path.join(baseDir, 'lock.json');
-    this.locked = this.enabled();
+    this.marker = path.join(baseDir, 'locked');
+    this.setLocked(this.enabled());
     this.failures = 0;
     this.blockedUntil = 0;
+  }
+
+  setLocked(locked) {
+    this.locked = locked;
+    try {
+      if (locked) fs.writeFileSync(this.marker, '');
+      else fs.rmSync(this.marker, { force: true });
+    } catch {
+      // best effort
+    }
   }
 
   read() {
@@ -39,7 +53,7 @@ class AppLock {
     const salt = crypto.randomBytes(16);
     const data = { salt: salt.toString('base64'), hash: hashPassword(password, salt).toString('base64') };
     fs.writeFileSync(this.file, JSON.stringify(data), { mode: 0o600 });
-    this.locked = false;
+    this.setLocked(false);
   }
 
   check(password) {
@@ -62,23 +76,23 @@ class AppLock {
 
   unlock(password) {
     if (!this.check(password)) return false;
-    this.locked = false;
+    this.setLocked(false);
     return true;
   }
 
   // Touch ID already proved the user is present.
   unlockTrusted() {
-    this.locked = false;
+    this.setLocked(false);
   }
 
   disable(password) {
     if (!this.check(password)) throw new Error('That password is incorrect.');
     fs.rmSync(this.file, { force: true });
-    this.locked = false;
+    this.setLocked(false);
   }
 
   lock() {
-    if (this.enabled()) this.locked = true;
+    if (this.enabled()) this.setLocked(true);
     return this.locked;
   }
 }

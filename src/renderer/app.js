@@ -282,6 +282,14 @@ function renderRecording() {
           <div><strong>Your microphone isn't being recorded.</strong> Only the call audio is captured, so your own voice will be missing. Check that a microphone is connected and that Sidebar is allowed to use it.</div>
           <button class="btn ghost" id="openMicPerm">Open settings</button>
         </div>` : ''}
+      ${state.micSilent && r.micAudio ? `
+        <div class="callout warn">
+          <div><strong>Your microphone seems silent.</strong> It hasn't picked up any sound for 2 minutes while others were talking. It may be muted, or your computer may have switched to a different microphone (this often happens when you change call apps).</div>
+          <div class="row">
+            <button class="btn primary" id="reconnectMicBtn">Reconnect microphone</button>
+            <button class="btn ghost" id="soundSettingsBtn">Sound settings</button>
+          </div>
+        </div>` : ''}
       ${state.reconnectedAt ? `<p class="hint center">An audio device changed at ${esc(state.reconnectedAt)}; Sidebar reconnected and kept recording.</p>` : ''}
       <div class="rec-indicator ${paused ? 'paused' : ''}"><span class="dot"></span>${paused ? 'Paused' : 'Recording'}</div>
       <div class="timer" id="timer">${clock(r.elapsedSeconds())}</div>
@@ -322,6 +330,15 @@ function renderRecording() {
   $('#discardBtn').addEventListener('click', () => exclusive(discardRecording));
   const perm = $('#openScreenPerm');
   if (perm) perm.addEventListener('click', () => api.openPermissionSettings('screen'));
+  const reconnect = $('#reconnectMicBtn');
+  if (reconnect) {
+    reconnect.addEventListener('click', async () => {
+      reconnect.disabled = true;
+      await r.restartCapture();
+    });
+  }
+  const sound = $('#soundSettingsBtn');
+  if (sound) sound.addEventListener('click', () => api.openPermissionSettings('sound'));
   const micPerm = $('#openMicPerm');
   if (micPerm) micPerm.addEventListener('click', () => api.openPermissionSettings('microphone'));
 }
@@ -652,6 +669,7 @@ async function startRecording() {
   state.marks = [];
   state.recordingTitle = meeting.title;
   state.diskError = null;
+  state.micSilent = false;
   state.reconnectedAt = null;
   state.selectedId = null;
   state.draft = { title: '', template: null, keyterms: '', matter: '' };
@@ -675,6 +693,8 @@ function handleRecorderFault(fault) {
   api.recordingFault(fault);
   if (fault.kind === 'disk') {
     state.diskError = fault.recovered ? null : fault.error || 'Saving failed';
+  } else if (fault.kind === 'mic-silent') {
+    state.micSilent = !fault.recovered;
   } else if (fault.kind === 'capture' && fault.recovered) {
     state.reconnectedAt = r ? clock(r.elapsedSeconds()) : null;
     api.recordingInfo({ systemAudio: fault.systemAudio, micAudio: fault.micAudio });

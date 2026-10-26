@@ -46,6 +46,24 @@ Tips:
 - **App lock.** Require a password (or Touch ID on Mac) to open Sidebar, and lock automatically when the computer is idle, locked or asleep. Recording keeps working while locked.
 - **Auto-delete.** Delete audio and transcripts (keeping the notes), or whole meetings, after 30 days to 2 years.
 - **Cost tracking.** Estimated cost per meeting and monthly totals in Settings.
+- **Silent microphone warning.** If your microphone picks up nothing for 2 minutes while others are talking (it's muted, or your computer switched mics when you changed call apps), Sidebar warns you and offers **Reconnect microphone**.
+- **Recording indicator** on the Dock (Mac) and taskbar (Windows) icon, as well as in the menu bar / tray.
+
+## Use your meetings in Claude
+
+The **Sidebar extension for Claude Desktop** lets Claude look up your meetings, so you can ask things like *"What did the judge order in Smith v. Jones?"*, *"Draft a reporting letter to the client from yesterday's hearing"* or *"List my time entries for this week"*.
+
+1. In Sidebar, open **Settings → Claude** and turn on **Let Claude read my meetings**. It's off by default.
+2. Click **Get the Claude Desktop extension** and open the downloaded `Sidebar-for-Claude.mcpb`. Claude Desktop installs it.
+3. In Claude, ask about your meetings. Claude uses these tools: list meetings, search (including transcripts), get a meeting, list matters, get time entries.
+
+It's read-only, reads Sidebar's data on your computer directly (Sidebar doesn't need to be open), and refuses to answer while Sidebar is locked or the setting is off. Whatever Claude reads is sent to Anthropic under your Claude account's terms. Claude Team and Enterprise plans don't use your data for training; check your plan's settings if you use a personal account.
+
+**Claude Code:** unzip `Sidebar-for-Claude.mcpb` somewhere permanent, then run:
+
+```bash
+claude mcp add sidebar -- node /path/to/Sidebar-for-Claude/server/index.js
+```
 
 ## Important: consent and court rules
 

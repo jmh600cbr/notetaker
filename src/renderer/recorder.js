@@ -10,6 +10,11 @@
 const CHUNK_MS = 5000;
 const STALL_MS = 20000;
 const RESTART_ATTEMPTS = 3;
+// A working microphone always picks up some room noise. Complete silence for
+// this long while other people are talking means it's muted or the wrong one.
+const MIC_SILENT_MS = 2 * 60 * 1000;
+const MIC_SILENT_PEAK = 0.0003;
+const CALL_SOUND_RMS = 0.02;
 
 class Recorder {
   constructor({ writeChunk, onFault, skipSystemAudio = false }) {
@@ -40,7 +45,39 @@ class Recorder {
     this.state = 'recording';
     this.resumedAt = Date.now();
     this.lastChunkAt = Date.now();
+    this.resetSoundClock();
     this.watchdog = setInterval(() => this.checkHealth(), 5000);
+    this.sampler = setInterval(() => this.sampleSound(), 250);
+  }
+
+  // ---- silent microphone ----
+
+  resetSoundClock() {
+    this.micSoundAt = Date.now();
+    this.callSoundAt = 0;
+  }
+
+  sampleSound() {
+    const c = this.capture;
+    if (this.state !== 'recording' || this.restarting || !c || c.closed) return;
+    const now = Date.now();
+    if (c.micAnalyser && Recorder.peak(c.micAnalyser) > MIC_SILENT_PEAK) this.micSoundAt = now;
+    if (c.systemAnalyser && Recorder.level(c.systemAnalyser) > CALL_SOUND_RMS) this.callSoundAt = now;
+    const limit = Recorder.MIC_SILENT_MS || MIC_SILENT_MS;
+    const silent = Boolean(c.mic) && now - this.micSoundAt > limit && now - this.callSoundAt < limit;
+    if (silent && !this.micSilent) {
+      this.micSilent = true;
+      this.onFault({ kind: 'mic-silent', recovered: false });
+    } else if (this.micSilent && now - this.micSoundAt < 1000) {
+      this.micSilent = false;
+      this.onFault({ kind: 'mic-silent', recovered: true });
+    }
+  }
+
+  // Reopens the microphone and computer audio, picking up whatever devices
+  // the system is using now (e.g. after switching from Teams to a browser).
+  restartCapture() {
+    return this.fault(this.capture, 'reconnected by user');
   }
 
   // ---- capture ----
@@ -192,6 +229,11 @@ class Recorder {
         this.capture = await this.openCapture(this.part);
         if (wasPaused) this.capture.recorder.pause();
         this.lastChunkAt = Date.now();
+        this.resetSoundClock();
+        if (this.micSilent) {
+          this.micSilent = false;
+          this.onFault({ kind: 'mic-silent', recovered: true });
+        }
         error = null;
         break;
       } catch (err) {
@@ -256,6 +298,14 @@ class Recorder {
     return node;
   }
 
+  static peak(node) {
+    const data = new Float32Array(node.fftSize);
+    node.getFloatTimeDomainData(data);
+    let max = 0;
+    for (const v of data) max = Math.max(max, Math.abs(v));
+    return max;
+  }
+
   static level(node) {
     if (!node) return 0;
     const data = new Float32Array(node.fftSize);
@@ -297,6 +347,7 @@ class Recorder {
     if (rec.state === 'paused') rec.resume();
     this.resumedAt = Date.now();
     this.lastChunkAt = Date.now();
+    this.resetSoundClock();
     this.state = 'recording';
   }
 
@@ -306,6 +357,7 @@ class Recorder {
     const seconds = this.elapsedSeconds();
     this.state = 'idle';
     clearInterval(this.watchdog);
+    clearInterval(this.sampler);
     await this.closeCapture(this.capture);
     this.stopping = true;
     let unsaved = 0;
