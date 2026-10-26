@@ -27,7 +27,9 @@ const OWNER = 'jmh600cbr';
 const REPO = 'notetaker';
 const RELEASES_PAGE = `https://github.com/${OWNER}/${REPO}/releases/latest`;
 const FIRST_CHECK_MS = 15 * 1000;
-const CHECK_EVERY_MS = 4 * 60 * 60 * 1000;
+const CHECK_EVERY_MS = 60 * 60 * 1000;
+// Opening the window also checks, at most this often.
+const CHECK_ON_OPEN_MS = 15 * 60 * 1000;
 
 // The .app bundle containing the running executable (…/Sidebar.app).
 function currentBundlePath() {
@@ -71,8 +73,16 @@ class Updater {
     setInterval(() => this.check(false), CHECK_EVERY_MS);
   }
 
+  // Called when the user opens Sidebar's window. Sidebar often runs in the
+  // tray for days, so don't make them wait for the hourly check.
+  checkSoon() {
+    if (!app.isPackaged || Date.now() - (this.lastCheckAt || 0) < CHECK_ON_OPEN_MS) return;
+    this.check(false);
+  }
+
   async check(userInitiated) {
     if (this.busy || ['ready', 'dev', 'downloading', 'installing', 'checking'].includes(this.state.status)) return this.state;
+    this.lastCheckAt = Date.now();
     const before = this.state;
     try {
       if (process.platform === 'win32') {

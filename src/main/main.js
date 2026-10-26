@@ -109,6 +109,8 @@ function createWindow() {
     },
   });
   mainWindow.removeMenu();
+  mainWindow.on('show', () => updater && updater.checkSoon());
+  mainWindow.on('focus', () => updater && updater.checkSoon());
   // Windows logoff/shutdown: don't start installing an update mid-shutdown.
   mainWindow.on('session-end', () => updater && updater.onSessionEnd());
 
