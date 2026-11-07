@@ -367,6 +367,7 @@ function renderMeeting() {
         </div>
         <div class="actions">
           <button class="btn ghost" id="copyBtn" ${busy ? 'disabled' : ''}>Copy</button>
+          <button class="btn ghost" id="emailBtn" ${busy || !meeting.summary ? 'disabled' : ''} title="Email the recap to yourself">Email</button>
           <button class="btn ghost" id="exportBtnM" ${busy ? 'disabled' : ''}>Export</button>
           <button class="btn ghost icon" id="deleteBtn" title="Delete">Delete</button>
         </div>
@@ -435,6 +436,21 @@ function renderMeeting() {
       toast(`Couldn't copy: ${cleanError(err)}`);
     }
   });
+  $('#emailBtn').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+    try {
+      const result = await api.emailRecap(meeting.id);
+      toast(result.sent ? `Recap emailed to ${result.to}` : 'Email draft opened in your mail app');
+    } catch (err) {
+      toast(`Couldn't email the recap: ${cleanError(err)}`);
+    }
+    if (document.body.contains(btn)) {
+      btn.disabled = false;
+      btn.textContent = 'Email';
+    }
+  });
   $('#exportBtnM').addEventListener('click', async () => {
     try {
       await api.exportMeeting(meeting.id);
@@ -468,8 +484,11 @@ function renderNotes(meeting, busy) {
   const notes = meeting.summary
     ? `<article class="notes">${markdown(meeting.summary)}</article>`
     : `<div class="empty-state">${busy ? 'Your notes will appear here.' : 'No notes yet.'}</div>`;
-  const saved = (meeting.savedFiles || []).length
-    ? `<span class="hint">Saved to your notes folder${meeting.matter ? ` (${esc(meeting.matter)})` : ''}.</span>` : '';
+  const saved = [
+    (meeting.savedFiles || []).length ? `Saved to your notes folder${meeting.matter ? ` (${esc(meeting.matter)})` : ''}.` : '',
+    meeting.emailedAt ? `Recap emailed ${esc(new Date(meeting.emailedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }))}.` : '',
+    meeting.emailError && !meeting.emailedAt ? `Recap not emailed: ${esc(meeting.emailError)}` : '',
+  ].filter(Boolean).map((t) => `<span class="hint">${t}</span>`).join(' ');
   const footer = hasTranscript ? `
     <div class="notes-footer">
       <span class="hint">${meeting.summary ? 'AI-generated. Check important details against the transcript.' : ''} ${saved}</span>
@@ -528,7 +547,7 @@ function renderTranscript(meeting, transcript) {
       ${transcript.map((s) => {
         const flag = flagFor(s);
         return `
-        <div class="line ${flag ? 'flagged' : ''}" ${flag ? `title="Marked at ${clock(flag.t)}${flag.label ? `: ${esc(flag.label)}` : ''}"` : ''}>
+        <div class="line ${flag ? 'flagged' : ''}" data-start="${s.start}" ${flag ? `title="Marked at ${clock(flag.t)}${flag.label ? `: ${esc(flag.label)}` : ''}"` : ''}>
           <span class="ts">${flag ? '⚑ ' : ''}${clock(s.start)}</span>
           <span class="who c${keys.indexOf(s.speaker) % 6}">${esc(speakers[s.speaker] || `Speaker ${s.speaker}`)}</span>
           <p>${esc(s.text)}</p>
@@ -844,6 +863,26 @@ api.onMeetingUpdated(async (meeting) => {
 
 api.onOpenMeeting((id) => openMeeting(id));
 
+// sidebar://meeting/<id>?t=<seconds> links, e.g. timestamps in recap emails.
+let appReady;
+const whenReady = new Promise((resolve) => (appReady = resolve));
+
+async function openMeetingAt({ id, t }) {
+  await whenReady;
+  if (state.recorder) return;
+  if (t !== null && t !== undefined) state.tab = 'transcript';
+  await openMeeting(id);
+  if (state.selectedId !== id || t === null || t === undefined) return;
+  const lines = [...document.querySelectorAll('.transcript .line')];
+  const line = lines.filter((l) => Number(l.dataset.start) <= t + 1).pop() || lines[0];
+  if (line) {
+    line.scrollIntoView({ block: 'center' });
+    line.classList.add('jump');
+    setTimeout(() => line.classList.remove('jump'), 2500);
+  }
+}
+api.onOpenMeetingAt(openMeetingAt);
+
 // ---------- settings & notice ----------
 
 function fillSettingsForm() {
@@ -906,8 +945,9 @@ async function refreshCalendarStatus() {
   const btn = $('#calendarBtn');
   btn.textContent = st.connected ? 'Disconnect' : 'Connect Outlook';
   btn.disabled = !st.configured && !st.connected;
+  $('#mailRow').hidden = !st.connected || st.mail;
   $('#calendarStatus').textContent = st.connected
-    ? `Connected as ${st.account}`
+    ? `Connected as ${st.account}${st.mail ? ' · email allowed' : ''}`
     : st.configured
       ? 'Not connected'
       : 'Enter the app ID, then Save, then Connect.';
@@ -918,7 +958,7 @@ async function refreshCalendarStatus() {
         state.upcoming = [];
       } else {
         $('#calendarStatus').textContent = 'Finish signing in in your browser…';
-        await api.connectCalendar();
+        await api.connectCalendar({ mail: $('#settingsForm').elements.emailRecap.checked });
         await loadUpcoming();
         toast('Outlook calendar connected');
       }
@@ -938,6 +978,17 @@ async function loadUpcoming() {
   }
   if (!state.recorder && state.selectedId === null) render();
 }
+
+$('#allowMailBtn').addEventListener('click', async () => {
+  try {
+    $('#calendarStatus').textContent = 'Finish signing in in your browser…';
+    await api.connectCalendar({ mail: true });
+    toast('Sidebar can now email you recaps');
+  } catch (err) {
+    toast(`Couldn't allow email: ${cleanError(err)}`);
+  }
+  refreshCalendarStatus();
+});
 
 // ---- app lock ----
 
@@ -1016,6 +1067,9 @@ async function afterUnlock() {
   await refreshMeetings();
   render();
   startUpcoming();
+  appReady();
+  const link = await api.pendingLink();
+  if (link) openMeetingAt(link);
 }
 
 function startUpcoming() {
@@ -1184,4 +1238,7 @@ $('#checkUpdatesBtn').addEventListener('click', async () => {
   await refreshMeetings();
   render();
   startUpcoming();
+  appReady();
+  const link = await api.pendingLink();
+  if (link) openMeetingAt(link);
 })();

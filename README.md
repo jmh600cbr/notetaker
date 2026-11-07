@@ -42,6 +42,7 @@ Tips:
 - **Mark a moment.** Press **⌥⇧⌘M** on Mac or **Ctrl+Alt+Shift+M** on Windows (or click **⚑ Mark moment**) when something important happens. You can add a label while recording. The notes get a "Flagged Moments" section and the transcript highlights the line.
 - **Time entry.** Every meeting gets a ready-to-paste time entry (rounded up to 0.1 h) with one-click Copy.
 - **Word documents and OneDrive.** In **Settings → Saving & Word documents**, choose a folder inside OneDrive or SharePoint, and finished notes are saved there automatically as Word (and/or Markdown), one subfolder per matter. You can add a header (firm name, "Privileged & Confidential") and a logo. **Export** also saves Word.
+- **Recap email.** Turn on **Settings → Microsoft 365 → Email me a recap after each meeting** and Sidebar emails you, from your own mailbox, the action items, topics and decisions with timestamps (click one to jump to that moment in Sidebar), optionally with the Word notes attached. Any meeting's **Email** button sends it on demand, or opens a ready-to-send draft if Microsoft 365 isn't connected.
 - **Outlook calendar.** Recordings are named after the meeting that's on, attendees' names improve the transcript, and Sidebar reminds you to record when a meeting starts. See [Connecting Outlook](#connecting-outlook-admin) below.
 - **App lock.** Require a password (or Touch ID on Mac) to open Sidebar, and lock automatically when the computer is idle, locked or asleep. Recording keeps working while locked.
 - **Auto-delete.** Delete audio and transcripts (keeping the notes), or whole meetings, after 30 days to 2 years.
@@ -146,11 +147,11 @@ Microsoft requires apps that read Outlook calendars to be registered in your org
 
 1. In the [Microsoft Entra admin center](https://entra.microsoft.com), go to **Applications → App registrations → New registration**. Name it "Sidebar" and choose **Accounts in this organizational directory only**.
 2. Under **Redirect URI**, choose **Public client/native (mobile & desktop)** and enter `http://localhost`.
-3. Open **API permissions → Add a permission → Microsoft Graph → Delegated permissions**, add **Calendars.Read** and **User.Read**, then click **Grant admin consent**.
+3. Open **API permissions → Add a permission → Microsoft Graph → Delegated permissions**, add **Calendars.Read**, **User.Read** and (for recap emails) **Mail.Send**, then click **Grant admin consent**.
 4. Copy the **Application (client) ID** and **Directory (tenant) ID** from the app's Overview page.
 5. In Sidebar, open **Settings → Outlook calendar**, paste both, click **Save**, then **Connect Outlook** and sign in. Include them in your exported team setup file so colleagues get them automatically.
 
-Sidebar only reads calendar events (title, time and attendee names). Sign-in tokens are stored encrypted on each computer.
+Sidebar only reads calendar events (title, time and attendee names) and, if recap emails are on, sends email from the user's mailbox to the user themselves. Sign-in tokens are stored encrypted on each computer.
 
 ### Code signing (recommended before sharing widely)
 

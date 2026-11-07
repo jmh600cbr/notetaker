@@ -2,13 +2,16 @@
 //
 // Used to name recordings after the meeting that's on now, pass attendee
 // names to transcription and speaker identification, and remind the user to
-// record when a meeting starts. Needs an app registration in the firm's
+// record when a meeting starts, and (optionally) to email the user their
+// meeting recap from their own mailbox. Needs an app registration in the firm's
 // Microsoft Entra ID (see README): a public client with the redirect URI
 // http://localhost and the delegated permission Calendars.Read.
 const fs = require('fs');
 const path = require('path');
 
 const SCOPES = ['Calendars.Read', 'User.Read'];
+// Only requested when the user turns on emailed recaps.
+const MAIL_SCOPES = ['Mail.Send'];
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 
 // The event that a recording starting at `now` most likely belongs to: one
@@ -102,15 +105,20 @@ class Calendar {
     if (!this.configured()) return { configured: false, connected: false };
     try {
       const account = await this.account();
-      return { configured: true, connected: Boolean(account), account: account ? account.username : null };
+      return {
+        configured: true,
+        connected: Boolean(account),
+        account: account ? account.username : null,
+        mail: account ? await this.canSendMail() : false,
+      };
     } catch (err) {
       return { configured: true, connected: false, error: err.message };
     }
   }
 
-  async connect() {
+  async connect({ mail = false } = {}) {
     const result = await this.pca().acquireTokenInteractive({
-      scopes: SCOPES,
+      scopes: mail ? [...SCOPES, ...MAIL_SCOPES] : SCOPES,
       openBrowser: async (url) => {
         await this.shell.openExternal(url);
       },
@@ -131,11 +139,76 @@ class Calendar {
     this.client = null;
   }
 
-  async token() {
+  async token(scopes = SCOPES) {
     const account = await this.account();
     if (!account) return null;
-    const result = await this.pca().acquireTokenSilent({ account, scopes: SCOPES });
+    const result = await this.pca().acquireTokenSilent({ account, scopes });
     return result.accessToken;
+  }
+
+  async canSendMail() {
+    try {
+      return Boolean(await this.token(MAIL_SCOPES));
+    } catch {
+      return false;
+    }
+  }
+
+  async graph(method, url, { scopes = SCOPES, body } = {}) {
+    let token;
+    try {
+      token = await this.token(scopes);
+    } catch {
+      token = null;
+    }
+    if (!token) {
+      throw new Error(
+        scopes === MAIL_SCOPES
+          ? 'Sidebar isn\'t allowed to send email yet. In Settings → Microsoft 365, click "Allow email".'
+          : 'Connect Outlook in Settings first.',
+      );
+    }
+    const res = await this.fetch(`${GRAPH}${url}`, {
+      method,
+      headers: { Authorization: `Bearer ${token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(60000),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`Microsoft 365 error (${res.status})${detail ? `: ${detail.slice(0, 200)}` : ''}`);
+    }
+    return res.status === 204 || res.status === 202 ? null : res.json();
+  }
+
+  // The signed-in user's email address.
+  async myAddress() {
+    const me = await this.graph('GET', '/me?$select=mail,userPrincipalName');
+    return me.mail || me.userPrincipalName;
+  }
+
+  // Sends an email from the user's own mailbox to themselves. A copy is kept
+  // in their Sent Items.
+  async sendToSelf({ subject, html, attachments = [] }) {
+    const address = await this.myAddress();
+    await this.graph('POST', '/me/sendMail', {
+      scopes: MAIL_SCOPES,
+      body: {
+        message: {
+          subject,
+          body: { contentType: 'HTML', content: html },
+          toRecipients: [{ emailAddress: { address } }],
+          attachments: attachments.map((a) => ({
+            '@odata.type': '#microsoft.graph.fileAttachment',
+            name: a.name,
+            contentType: a.contentType,
+            contentBytes: Buffer.from(a.data).toString('base64'),
+          })),
+        },
+        saveToSentItems: true,
+      },
+    });
+    return address;
   }
 
   async events(from, to) {
@@ -178,4 +251,4 @@ class Calendar {
   }
 }
 
-module.exports = { Calendar, pickEvent, attendeeNames };
+module.exports = { Calendar, pickEvent, attendeeNames, MAIL_SCOPES };

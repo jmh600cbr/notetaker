@@ -37,6 +37,8 @@ contextBridge.exposeInMainWorld('sidebar', {
   searchMeetings: (query) => invoke('meetings:search', query),
   listMatters: () => invoke('meetings:matters'),
   saveToFolder: (id) => invoke('meetings:saveToFolder', id),
+  emailRecap: (id) => invoke('meetings:email', id),
+  pendingLink: () => invoke('link:pending'),
 
   startRecording: (opts) => invoke('recording:start', opts),
   sendChunk: (id, part, data) => invoke('recording:chunk', id, part, data),
@@ -52,7 +54,7 @@ contextBridge.exposeInMainWorld('sidebar', {
   onUpdateState: (cb) => on('updater:state', cb),
 
   calendarStatus: () => invoke('calendar:status'),
-  connectCalendar: () => invoke('calendar:connect'),
+  connectCalendar: (opts) => invoke('calendar:connect', opts),
   disconnectCalendar: () => invoke('calendar:disconnect'),
   upcomingEvents: () => invoke('calendar:upcoming'),
 
@@ -69,5 +71,6 @@ contextBridge.exposeInMainWorld('sidebar', {
 
   onMeetingUpdated: (cb) => on('meetings:updated', cb),
   onOpenMeeting: (cb) => on('meetings:open', cb),
+  onOpenMeetingAt: (cb) => on('meetings:openAt', cb),
   onMeetingsRefresh: (cb) => on('meetings:refresh', cb),
 });
