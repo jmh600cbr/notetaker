@@ -26,8 +26,10 @@ const {
   answerMatterQuestion,
   identifySpeakers,
   draftTimeEntry,
+  draftRecap,
   formatTranscript,
 } = require('./summarize');
+const { buildRecapEmail, buildEml } = require('./recapEmail');
 const { buildDocx } = require('./docx');
 const { Calendar, attendeeNames } = require('./calendar');
 const { AppLock } = require('./lock');
@@ -65,6 +67,30 @@ const MIN_FREE_BYTES = 300 * 1024 * 1024;
 // the tray) must exit before doing anything, or it would mark the running
 // instance's recording as interrupted.
 const isPrimaryInstance = app.requestSingleInstanceLock();
+
+// sidebar://meeting/<id>?t=<seconds> links (from recap emails) open a meeting,
+// at that moment of the transcript.
+const PROTOCOL = 'sidebar';
+let pendingLink = null;
+
+function openLink(url) {
+  const m = /^sidebar:\/\/meeting\/([\w-]+)\/?(?:\?t=(\d+))?/.exec(String(url || ''));
+  if (!m) return;
+  const target = { id: m[1], t: m[2] ? Number(m[2]) : null };
+  if (!mainWindow || mainWindow.webContents.isLoading()) {
+    pendingLink = target;
+    return;
+  }
+  showWindow();
+  send('meetings:openAt', target);
+}
+
+const linkFromArgs = (argv) => argv.find((a) => a.startsWith(`${PROTOCOL}://`));
+// macOS delivers links through this event, even before the app is ready.
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  openLink(url);
+});
 if (!isPrimaryInstance) app.exit(0);
 if (process.platform === 'win32') app.setAppUserModelId(APP_ID);
 
@@ -343,8 +369,17 @@ async function processMeeting(id) {
     } catch (err) {
       console.warn('Time entry failed:', err.message);
     }
+    // Structured recap (action items, topics, decisions) for the email.
+    try {
+      const recap = await draftRecap({ apiKey: settings.anthropicApiKey, meeting, segments, onUsage });
+      meeting = store.updateMeeting(id, { recap });
+    } catch (err) {
+      console.warn('Recap failed:', err.message);
+    }
     meeting = store.updateMeeting(id, { status: 'ready', error: null });
     await saveToFolder(id);
+    // Email the recap once per meeting (not again when notes are regenerated).
+    if (settings.emailRecap && !meeting.emailedAt) await emailRecap(id, { automatic: true });
     meeting = store.getMeeting(id);
 
     if (!keepAudio && !meeting.warning) meeting = store.deleteAudio(id);
@@ -365,6 +400,57 @@ async function processMeeting(id) {
 
 // Writes the finished notes into the user's chosen folder (e.g. in OneDrive),
 // in a subfolder per matter, replacing the previous copy if it moved.
+// Emails the meeting recap to the user from their own Microsoft 365 mailbox.
+// Without Microsoft 365, a manual send opens a ready-to-send draft instead.
+async function emailRecap(id, { automatic = false } = {}) {
+  const settings = store.getSettings();
+  let meeting = store.getMeeting(id);
+  const segments = store.getTranscript(id);
+  try {
+    if (!meeting.recap) {
+      if (!segments.length) throw new Error('This meeting has no transcript to recap.');
+      const recap = await draftRecap({
+        apiKey: settings.anthropicApiKey,
+        meeting,
+        segments,
+        onUsage: (usage) => store.addCost(id, { ai: claudeCost(usage) }),
+      });
+      meeting = store.updateMeeting(id, { recap });
+    }
+    const email = buildRecapEmail({ meeting, recap: meeting.recap, footer: settings.docHeader });
+    const attachments = [];
+    if (settings.emailAttachDocx && meeting.summary) {
+      attachments.push({
+        name: `${safeFileName(meeting.title)}.docx`,
+        contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        data: await buildDocx({ meeting, segments, headerText: settings.docHeader, logoPath: settings.docLogo }),
+      });
+    }
+
+    const canSend = calendar.configured() && (await calendar.canSendMail());
+    if (canSend) {
+      const to = await calendar.sendToSelf({ subject: email.subject, html: email.html, attachments });
+      broadcastMeeting(store.updateMeeting(id, { emailedAt: new Date().toISOString(), emailError: null }));
+      return { sent: true, to };
+    }
+    if (automatic) {
+      throw new Error('Connect Microsoft 365 and allow email in Settings to have recaps emailed to you.');
+    }
+    // Draft for the user's mail app (Outlook opens X-Unsent files as drafts).
+    const dir = path.join(app.getPath('temp'), 'sidebar-drafts');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${safeFileName(meeting.title)}.eml`);
+    fs.writeFileSync(file, buildEml({ subject: email.subject, html: email.html, text: email.text, attachments }));
+    const failed = await shell.openPath(file);
+    if (failed) throw new Error(`Couldn't open the email draft: ${failed}`);
+    return { sent: false, draft: true };
+  } catch (err) {
+    broadcastMeeting(store.updateMeeting(id, { emailError: err.message }));
+    if (automatic) notify('Couldn’t email your notes', err.message, id);
+    throw err;
+  }
+}
+
 async function saveToFolder(id) {
   const settings = store.getSettings();
   if (!settings.saveFolder) return;
@@ -431,7 +517,7 @@ function meetingToMarkdown(meeting, segments) {
 const LOCKED_CHANNELS = new Set([
   'settings:save', 'settings:import', 'settings:export', 'settings:chooseFolder', 'settings:chooseLogo', 'settings:clear',
   'meetings:list', 'meetings:get', 'meetings:update', 'meetings:delete', 'meetings:retry', 'meetings:resummarize',
-  'meetings:ask', 'meetings:askMatter', 'meetings:matters', 'meetings:export', 'meetings:copyText', 'meetings:search', 'meetings:saveToFolder',
+  'meetings:ask', 'meetings:askMatter', 'meetings:matters', 'meetings:email', 'meetings:export', 'meetings:copyText', 'meetings:search', 'meetings:saveToFolder',
   'calendar:connect', 'calendar:disconnect', 'calendar:upcoming', 'lock:disable',
 ]);
 
@@ -605,6 +691,15 @@ function registerIpc() {
 
   handle('meetings:saveToFolder', (_e, id) => saveToFolder(id));
 
+  handle('meetings:email', (_e, id) => emailRecap(id));
+
+  // A link that arrived before the window was ready.
+  ipcMain.handle('link:pending', () => {
+    const link = pendingLink;
+    pendingLink = null;
+    return link;
+  });
+
   handle('meetings:matters', () => store.listMatters());
 
   // Search titles, matters, notes and transcripts.
@@ -739,8 +834,8 @@ function registerIpc() {
 
   // ---- Outlook calendar ----
   ipcMain.handle('calendar:status', () => calendar.status());
-  handle('calendar:connect', async () => {
-    const result = await calendar.connect();
+  handle('calendar:connect', async (_e, opts) => {
+    const result = await calendar.connect({ mail: Boolean(opts && opts.mail) });
     scheduleReminders();
     return result;
   });
@@ -993,10 +1088,21 @@ function safeFileName(title) {
   return name || 'meeting-notes';
 }
 
-app.on('second-instance', showWindow);
+// Windows passes links to the running instance as a command-line argument.
+app.on('second-instance', (_event, argv) => {
+  showWindow();
+  const url = linkFromArgs(argv);
+  if (url) openLink(url);
+});
 
 app.whenReady().then(() => {
   if (!isPrimaryInstance) return;
+  // Handle sidebar:// links (installed apps only; dev builds would register
+  // the bare Electron binary).
+  if (app.isPackaged) app.setAsDefaultProtocolClient(PROTOCOL);
+  const startupLink = linkFromArgs(process.argv);
+  if (startupLink) openLink(startupLink);
+
   store = new Store(app.getPath('userData'), safeStorage);
   store.recoverInterrupted();
   appLock = new AppLock(app.getPath('userData'));

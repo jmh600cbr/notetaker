@@ -264,3 +264,5 @@ h1 { font-size: 30px; margin: 12px 0 6px; letter-spacing: -0.4px; }
 .lock-card input { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; background: var(--panel); outline: none; text-align: center; }
 .lock-card input:focus { border-color: var(--accent); }
 .lock-error { color: #c03a3a; min-height: 1.2em; margin: 0; font-size: 13px; }
+
+.line.jump { background: color-mix(in srgb, var(--accent) 28%, transparent); border-radius: 6px; transition: background 0.6s; }

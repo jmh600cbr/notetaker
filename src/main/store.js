@@ -26,6 +26,9 @@ const DEFAULT_SETTINGS = {
   calendarClientId: '',
   calendarTenant: 'organizations',
   calendarReminders: true,
+  // Email the user a recap after each meeting (via Microsoft 365).
+  emailRecap: false,
+  emailAttachDocx: true,
   // Privacy.
   claudeAccess: false,
   lockAfterMinutes: 15,

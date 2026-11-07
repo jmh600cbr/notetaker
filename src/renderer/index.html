@@ -133,8 +133,8 @@
         </section>
 
         <section>
-          <h3>Outlook calendar</h3>
-          <p class="hint">Names recordings after the meeting that's on, uses the attendees' names to improve the transcript, and reminds you to record when a meeting starts. Needs a one-time app registration by your Microsoft 365 administrator (see the README).</p>
+          <h3>Microsoft 365 (Outlook)</h3>
+          <p class="hint">Names recordings after the meeting that's on, uses the attendees' names to improve the transcript, reminds you to record when a meeting starts, and can email you a recap after each meeting. Needs a one-time app registration by your Microsoft 365 administrator (see the README).</p>
           <label class="field">
             <span>Microsoft app (client) ID</span>
             <input name="calendarClientId" autocomplete="off" placeholder="00000000-0000-0000-0000-000000000000" />
@@ -151,6 +151,18 @@
             <input type="checkbox" name="calendarReminders" />
             <span>Remind me to record when a meeting starts</span>
           </label>
+          <label class="toggle">
+            <input type="checkbox" name="emailRecap" />
+            <span>Email me a recap after each meeting <small>Action items, topics and decisions with timestamps, sent from your own mailbox to you. A copy stays in your Sent Items.</small></span>
+          </label>
+          <label class="toggle">
+            <input type="checkbox" name="emailAttachDocx" />
+            <span>Attach the notes as a Word document</span>
+          </label>
+          <div class="row" id="mailRow" hidden>
+            <button type="button" class="btn ghost" id="allowMailBtn">Allow email</button>
+            <span class="hint">Sidebar needs your permission to send email from your mailbox.</span>
+          </div>
         </section>
 
         <section>

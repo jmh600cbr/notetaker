@@ -285,6 +285,80 @@ For each other label give a short name and/or role. Use "high" confidence only w
   return names;
 }
 
+const POINT = {
+  type: 'object',
+  properties: {
+    text: { type: 'string', description: 'One or two sentences. Wrap the few most important words in **double asterisks**.' },
+    t: { type: 'integer', description: 'Seconds into the recording where this was discussed (from the transcript timestamps).' },
+  },
+  required: ['text', 't'],
+  additionalProperties: false,
+};
+
+const RECAP_SCHEMA = {
+  type: 'object',
+  properties: {
+    action_items: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          owner: { type: 'string', description: 'Who will do it (name or role as in the transcript), or "Unassigned".' },
+          task: { type: 'string', description: 'What they will do, starting with a verb.' },
+          due: { type: 'string', description: 'Deadline if one was stated, else empty.' },
+          t: { type: 'integer', description: 'Seconds into the recording where it was agreed.' },
+        },
+        required: ['owner', 'task', 'due', 't'],
+        additionalProperties: false,
+      },
+    },
+    topics: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          title: { type: 'string' },
+          points: { type: 'array', items: POINT },
+        },
+        required: ['title', 'points'],
+        additionalProperties: false,
+      },
+    },
+    decisions: { type: 'array', items: POINT },
+  },
+  required: ['action_items', 'topics', 'decisions'],
+  additionalProperties: false,
+};
+
+// A structured recap for the follow-up email: action items, topics with
+// timestamped points, and decisions.
+async function draftRecap({ apiKey, meeting, segments, onUsage }) {
+  const instructions = `Write a recap of this meeting for a follow-up email.
+
+- action_items: every task someone committed to or was asked to do. Owner as named in the transcript ("You" is the person who recorded it).
+- topics: the 3–6 main topics in the order discussed, each with 2–6 points that capture the substance (facts, positions, numbers, dates). Every topic must have at least one point.
+- decisions: what was actually agreed or decided. Don't list open questions as decisions.
+- t: the timestamp (in seconds) of the transcript line where each item was discussed.
+- Only use what's in the transcript. Be specific and concise.`;
+  const text = await askClaude({
+    apiKey,
+    meeting,
+    segments,
+    onUsage,
+    instructions,
+    effort: 'medium',
+    maxTokens: 16000,
+    format: { type: 'json_schema', schema: RECAP_SCHEMA },
+  });
+  const recap = JSON.parse(text);
+  const clampT = (t) => Math.max(0, Math.min(Number(t) || 0, (meeting.durationSec || 0) + 60));
+  return {
+    actionItems: recap.action_items.map((a) => ({ owner: a.owner, task: a.task, due: a.due, t: clampT(a.t) })),
+    topics: recap.topics.map((tp) => ({ title: tp.title, points: tp.points.map((p) => ({ text: p.text, t: clampT(p.t) })) })),
+    decisions: recap.decisions.map((d) => ({ text: d.text, t: clampT(d.t) })),
+  };
+}
+
 // About 4 characters per token; leave plenty of the 1M-token context free.
 const MATTER_CHAR_BUDGET = 2400000;
 
@@ -320,6 +394,7 @@ module.exports = {
   answerMatterQuestion,
   identifySpeakers,
   draftTimeEntry,
+  draftRecap,
   billableHours,
   formatTranscript,
   formatTimestamp,

@@ -1,7 +1,7 @@
 {
   "name": "sidebar-notes",
   "productName": "Sidebar",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "The AI notetaker that never joins the call. Records and summarizes meetings from the background.",
   "main": "src/main/main.js",
   "author": "Sidebar",
@@ -9,7 +9,7 @@
   "private": true,
   "scripts": {
     "start": "electron .",
-    "check": "node --check src/main/main.js && node --check src/main/store.js && node --check src/main/transcribe.js && node --check src/main/summarize.js && node --check src/main/updater.js && node --check src/main/pricing.js && node --check src/main/docx.js && node --check src/main/calendar.js && node --check src/main/lock.js && node --check src/main/version.js && node --check src/preload.js && node --check src/renderer/app.js && node --check src/renderer/recorder.js",
+    "check": "node --check src/main/main.js && node --check src/main/store.js && node --check src/main/transcribe.js && node --check src/main/summarize.js && node --check src/main/updater.js && node --check src/main/pricing.js && node --check src/main/docx.js && node --check src/main/calendar.js && node --check src/main/lock.js && node --check src/main/recapEmail.js && node --check src/main/version.js && node --check src/preload.js && node --check src/renderer/app.js && node --check src/renderer/recorder.js",
     "test": "node --test",
     "dist": "electron-builder",
     "dist:mac": "electron-builder --mac",
@@ -97,6 +97,14 @@
       "enableEmbeddedAsarIntegrityValidation": true,
       "onlyLoadAppFromAsar": true,
       "enableCookieEncryption": true
-    }
+    },
+    "protocols": [
+      {
+        "name": "Sidebar",
+        "schemes": [
+          "sidebar"
+        ]
+      }
+    ]
   }
 }

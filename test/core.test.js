@@ -245,3 +245,57 @@ test('Word export produces a document with the notes and transcript', async () =
   assert.match(xml, /Granted\./);
   assert.doesNotMatch(xml, /&lt;b&gt;/);
 });
+
+test('recap email: escaped, bold only, timestamps link into Sidebar', () => {
+  const { buildRecapEmail, buildEml } = require('../src/main/recapEmail');
+  const meeting = { id: '2026-10-28-ab12cd34', title: 'NOI <call> & "alignment"', createdAt: '2026-10-28T21:00:00Z', durationSec: 1800, matter: 'Tablz' };
+  const recap = {
+    actionItems: [{ owner: 'Matthew', task: 'draft the **letter** <img src=x onerror=alert(1)>', due: 'Friday', t: 2144 }],
+    topics: [{ title: 'Background', points: [{ text: 'NOI signed **Aug 12**', t: 240 }] }],
+    decisions: [],
+  };
+  const e = buildRecapEmail({ meeting, recap, footer: 'Firm LLP' });
+  assert.match(e.subject, /^📝 NOI <call> & "alignment" on Oct 28 — 1 action item, 0 decisions$/);
+  assert.ok(e.html.includes('NOI &lt;call&gt; &amp; &quot;alignment&quot;'));
+  assert.ok(e.html.includes('<strong style="color:#182033">letter</strong>'));
+  assert.ok(!e.html.includes('<img'), 'no HTML from the AI gets through');
+  assert.ok(e.html.includes('href="sidebar://meeting/2026-10-28-ab12cd34?t=2144"'));
+  assert.ok(e.html.includes('>35:44<'));
+  assert.ok(e.html.includes('No decisions recorded.'));
+  assert.match(e.text, /- Matthew to draft the letter <img src=x onerror=alert\(1\)> \(by Friday\) \[35:44\]/);
+
+  const eml = buildEml({ subject: e.subject, html: e.html, text: e.text, attachments: [{ name: 'Réunion.docx', contentType: 'application/octet-stream', data: Buffer.from('PK') }] });
+  assert.match(eml, /^Subject: =\?UTF-8\?B\?/m);
+  assert.match(eml, /^X-Unsent: 1$/m);
+  assert.match(eml, /filename\*=UTF-8''R%C3%A9union\.docx/);
+  const htmlPart = eml.split('Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n')[1].split('\r\n--')[0];
+  assert.equal(Buffer.from(htmlPart.replace(/\r\n/g, ''), 'base64').toString(), e.html);
+});
+
+test('recap email is sent from the user\'s mailbox to themselves', async () => {
+  const { Calendar, MAIL_SCOPES } = require('../src/main/calendar');
+  const calls = [];
+  const cal = new Calendar({
+    baseDir: os.tmpdir(),
+    getSettings: () => ({ calendarClientId: 'x' }),
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      if (url.endsWith('/me?$select=mail,userPrincipalName')) return new Response(JSON.stringify({ mail: 'joshua@example.com' }));
+      return new Response(null, { status: 202 });
+    },
+  });
+  const scopesSeen = [];
+  cal.token = async (scopes) => {
+    scopesSeen.push(scopes);
+    return 'token';
+  };
+  const to = await cal.sendToSelf({ subject: 'S', html: '<p>h</p>', attachments: [{ name: 'n.docx', contentType: 'x/y', data: Buffer.from('abc') }] });
+  assert.equal(to, 'joshua@example.com');
+  const send = calls.find((c) => c.url.endsWith('/me/sendMail'));
+  const body = JSON.parse(send.init.body);
+  assert.deepEqual(body.message.toRecipients, [{ emailAddress: { address: 'joshua@example.com' } }]);
+  assert.equal(body.message.body.contentType, 'HTML');
+  assert.equal(body.message.attachments[0].contentBytes, Buffer.from('abc').toString('base64'));
+  assert.equal(body.saveToSentItems, true);
+  assert.ok(scopesSeen.includes(MAIL_SCOPES));
+});
